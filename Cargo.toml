@@ -11,6 +11,7 @@ log = "0.4"
 
 [dev-dependencies]
 criterion = "0.3"
+quickcheck = "0.9"
 
 [[bench]]
 name = "my_benchmark"

@@ -26,9 +26,6 @@ pub struct ReferenceSaw {
 
     // Number of harmonics to be generated
     num_harmonics: HarmonicsCounter,
-
-    // Amplitude norm, chosen so that the output is between -1.0 and +1.0
-    amplitude_norm: f64,
 }
 
 impl Oscillator for ReferenceSaw {
@@ -50,14 +47,10 @@ impl Oscillator for ReferenceSaw {
         let num_harmonics = synthesis::band_limited_harmonics(sampling_rate, oscillator_freq);
         synthesis::check_harmonics_precision(num_harmonics, f64::MANTISSA_DIGITS);
 
-        // Compute the amplitude norm, which is the harmonic number
-        let amplitude_norm = synthesis::harmonic_number(num_harmonics) as f64;
-
         // We're ready to generate signal
         Self {
             phase,
             num_harmonics,
-            amplitude_norm,
         }
     }
 }
@@ -75,7 +68,7 @@ impl Iterator for ReferenceSaw {
             let harmonic = harmonic as f64;
             accumulator += (harmonic * phase).sin() / harmonic;
         }
-        accumulator /= self.amplitude_norm;
+        accumulator /= std::f64::consts::PI;
         Some(accumulator as _)
     }
 }

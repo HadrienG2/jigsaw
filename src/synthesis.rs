@@ -47,31 +47,6 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
     }
 }
 
-/// Compute the n-th harmonic number, that is, sum(1..=n, 1/n)
-pub(crate) fn harmonic_number(num_harmonics: HarmonicsCounter) -> AudioSample {
-    // Handle trivial cases
-    if num_harmonics <= 1 {
-        return num_harmonics as _;
-    }
-
-    // Compute harmonic number, splitting out the last term's computation...
-    let prev_number = (1..num_harmonics)
-        .map(|harmonic| 1.0 / (harmonic as f64))
-        .sum::<f64>();
-    let last_contrib = 1.0 / (num_harmonics as f64);
-    let result = prev_number + last_contrib;
-
-    // ...so that we can check final summation error as a coarse but hopefully
-    // good enough indicator of how wrong the result is.
-    let error = (result - prev_number) - last_contrib;
-    assert_lt!(
-        error.abs(),
-        AudioSample::EPSILON as f64 / 2.0,
-        "Too many harmonics to accurately compute the harmonic number"
-    );
-    result as AudioSample
-}
-
 /// This crate is all about implementing digital oscillators for audio synthesis
 pub trait Oscillator: Iterator<Item = AudioSample> {
     /// Set up an oscillator
@@ -148,25 +123,5 @@ mod tests {
             );
             true
         }
-
-        fn harmonic_number(num_harmonics: HarmonicsCounter) -> TestResult {
-            use super::harmonic_number;
-            // We expect harmonic number computations to work for band*limited
-            // signals from the beginning of the audio range, on the highest end
-            // sound cards available at the time this crate is released.
-            if num_harmonics >= 1 && num_harmonics < (192_000 / 2) / 20 {
-                let actual = harmonic_number(num_harmonics);
-                let expected = (harmonic_number(num_harmonics - 1) as f64 + 1.0 / (num_harmonics as f64)) as AudioSample;
-                assert_lt!((actual - expected) / expected, AudioSample::EPSILON);
-                TestResult::passed()
-            } else {
-                TestResult::discard()
-            }
-        }
     }
-
-    // TODO: Add correctness tests, including a generic oscillator test that
-    //       takes the band-unlimited version as input and compares against it
-    //       for a very high sampling rate / frequency ratio (say,
-    //       2^f32::MANTISSA_BITS), where the two versions should be ~identical.
 }

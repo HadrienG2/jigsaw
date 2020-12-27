@@ -283,7 +283,7 @@ impl ReferenceSaw {
         //
         let amplitude_norm = (1..=num_harmonics)
             .map(|harmonic| 1.0 / (harmonic as f64))
-            .sum::<f64>();
+            .sum();
 
         // We're ready to generate signal
         Self {

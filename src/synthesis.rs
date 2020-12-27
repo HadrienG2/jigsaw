@@ -72,8 +72,11 @@ pub trait Oscillator: Iterator<Item = AudioSample> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{test_tools as audio_tests, NonZeroSamplingRate};
-    use audio_tests::{is_standard_rate, panics};
+    use crate::{
+        audio::{test_tools as audio_tests, NonZeroSamplingRate},
+        test_tools::panics,
+    };
+    use audio_tests::is_standard_rate;
 
     mod band_limited_harmonics {
         use super::*;

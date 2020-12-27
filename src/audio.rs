@@ -99,24 +99,7 @@ pub type AudioSample = f32;
 #[cfg(test)]
 pub(crate) mod test_tools {
     use super::*;
-    use std::panic::{catch_unwind, UnwindSafe};
-
-    /// Check that a function panics when called
-    pub fn panics<R>(f: impl FnOnce() -> R + UnwindSafe) -> bool {
-        catch_unwind(f).is_err()
-    }
-
-    /// Check that a certain user input passes maximally rigorous validation
-    // TODO: Consider moving to a dedicated module
-    pub fn is_standard<I: UnwindSafe>(
-        input: I,
-        validation: impl FnOnce(I) -> bool + UnwindSafe,
-    ) -> bool {
-        match catch_unwind(|| validation(input)) {
-            Ok(true) => true,
-            Ok(false) | Err(_) => false,
-        }
-    }
+    use crate::test_tools;
 
     /// We only test sampling rates above 44100 Hz because...
     /// 1. It is a minimum for perfect audio fidelity, which we should aim for
@@ -126,12 +109,12 @@ pub(crate) mod test_tools {
     /// because no sound card will support them for any foreseeable future.
     ///
     pub fn is_standard_rate(rate: NonZeroSamplingRate) -> bool {
-        is_standard(rate.get(), validate_sampling_rate)
+        test_tools::is_standard(rate.get(), validate_sampling_rate)
     }
 
     /// Test that a requested oscillator frequency falls into the ideal range.
     /// Other frequencies are tested via specific edge-case tests.
     pub fn is_standard_freq(rate: NonZeroSamplingRate, freq: AudioFrequency) -> bool {
-        is_standard((rate.get(), freq), validate_audio_frequency)
+        test_tools::is_standard((rate.get(), freq), validate_audio_frequency)
     }
 }

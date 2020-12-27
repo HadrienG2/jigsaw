@@ -220,8 +220,11 @@ impl Iterator for OscillatorPhase {
 #[cfg(test)]
 mod tests {
     use super::{AudioPhaseMod::consts::TAU, *};
-    use crate::audio::{test_tools as audio_tests, NonZeroSamplingRate};
-    use audio_tests::{is_standard_rate, panics};
+    use crate::{
+        audio::{test_tools as audio_tests, NonZeroSamplingRate},
+        test_tools::{is_standard, panics},
+    };
+    use audio_tests::is_standard_rate;
     use quickcheck::{quickcheck, TestResult};
 
     /// Test that a requested oscillator frequency falls into the ideal range.
@@ -233,7 +236,7 @@ mod tests {
     /// Test that a requested oscillator phase falls into the ideal range.
     /// Other phases are tested via specific edge-case tests.
     fn is_standard_offset(offset: AudioPhase) -> bool {
-        audio_tests::is_standard(offset, validate_audio_phase)
+        is_standard(offset, validate_audio_phase)
     }
 
     /// Test that an oscillator's phase has expected initial state and behavior

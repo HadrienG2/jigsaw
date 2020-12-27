@@ -1,6 +1,8 @@
 pub(crate) mod audio;
 mod phase;
 mod synthesis;
+#[cfg(test)]
+pub(crate) mod test_tools;
 
 use crate::{
     phase::{AudioPhase, OscillatorPhase},

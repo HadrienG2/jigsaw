@@ -37,6 +37,23 @@ pub fn min_oscillator_freq(sampling_rate: SamplingRateHz) -> AudioFrequency {
 pub type AudioPhase = f32;
 use std::f32 as AudioPhaseMod;
 
+/// Validate a user-provided audio phase
+///
+/// This function will panic if the input is fundamentally incorrect, and return
+/// false if the input is not ideal but can be used with a reasonable chance of
+/// partial success (e.g. slightly inaccurate result)..
+///
+pub(crate) fn validate_audio_phase(phase: AudioPhase) -> bool {
+    match phase.classify() {
+        FpCategory::Nan | FpCategory::Infinite => panic!("Oscillator phase should be finite"),
+        FpCategory::Subnormal => {
+            warn!("This crate is neither designed nor tested for subnormal oscillator phases");
+            false
+        }
+        FpCategory::Normal | FpCategory::Zero => true,
+    }
+}
+
 /// The sample index is represented as a floating-point number of the same type
 /// as the phase to avoid conversions.
 ///
@@ -86,9 +103,10 @@ impl OscillatorPhase {
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self {
-        // Check that sample rate and frequency mostly make sense
+        // Check that the input parameters make sense
         audio::validate_sampling_rate(sampling_rate);
         audio::validate_audio_frequency((sampling_rate, oscillator_freq));
+        validate_audio_phase(initial_phase);
 
         // Check that the oscillator frequency can be handled by our internal
         // processing, if not adjust to the closest supported one.
@@ -111,16 +129,8 @@ impl OscillatorPhase {
             }
         }
 
-        // Check that the initial oscillator phase is not IEEE-754 madness.
-        // Flush subnormal phases to zero to avoid the performance hit, and
-        // normalize phase to the [0; 2*pi] range for maximal accuracy.
-        let phase_offset = match initial_phase.classify() {
-            FpCategory::Nan | FpCategory::Infinite => {
-                panic!("Initial oscillator phase should be finite")
-            }
-            FpCategory::Subnormal => 0.0,
-            FpCategory::Normal | FpCategory::Zero => initial_phase,
-        } % AudioPhaseMod::consts::TAU;
+        // Normalize phase offset to the [0; 2*pi] range for maximal accuracy.
+        let phase_offset = initial_phase % AudioPhaseMod::consts::TAU;
 
         // Handle the zero-frequency edge case right away
         if relative_freq == 0.0 {
@@ -252,7 +262,7 @@ mod tests {
     /// Test that a requested oscillator phase falls into the ideal range.
     /// Other phases are tested via specific edge-case tests.
     fn is_standard_offset(offset: AudioPhase) -> bool {
-        offset.is_normal()
+        fully_valid(offset, validate_audio_phase)
     }
 
     /// Test that an oscillator's phase has expected initial state and behavior
@@ -351,11 +361,10 @@ mod tests {
                 return TestResult::discard();
             }
 
-            // Check that subnormal offsets are flushed to zero
+            // Check that subnormal offsets are handled well
             let rate = rate.get();
-            let zero = test_phase(rate, freq, 0.0);
-            assert_eq!(OscillatorPhase::new(rate, freq, 0.99 * AudioPhase::MIN_POSITIVE), zero);
-            assert_eq!(OscillatorPhase::new(rate, freq, 0.01 * AudioPhase::MIN_POSITIVE), zero);
+            test_phase(rate, freq, 0.99 * AudioPhase::MIN_POSITIVE);
+            test_phase(rate, freq, 0.01 * AudioPhase::MIN_POSITIVE);
             TestResult::passed()
         }
     }

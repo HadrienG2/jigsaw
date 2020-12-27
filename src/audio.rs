@@ -8,7 +8,8 @@ use log::warn;
 // u32 seems just fine for all foreseeable future.
 //
 pub type SamplingRateHz = u32;
-pub type NonZeroSamplingRate = core::num::NonZeroU32;
+#[cfg(test)]
+pub(crate) type NonZeroSamplingRate = core::num::NonZeroU32;
 
 /// Minimal sampling rate that this crate is tested against
 //

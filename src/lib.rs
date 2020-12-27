@@ -39,7 +39,7 @@ impl Oscillator for ReferenceSaw {
         // Validate user inputs
         audio::validate_sampling_rate(sampling_rate);
         audio::validate_audio_frequency((sampling_rate, oscillator_freq));
-        // TODO: Validate initial_phase
+        phase::validate_audio_phase(initial_phase);
 
         // Set up the phase clock
         let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);

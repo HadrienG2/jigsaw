@@ -58,6 +58,67 @@ pub trait Oscillator: Iterator<Item = AudioSample> {
 }
 
 #[cfg(test)]
+pub(crate) mod test_tools {
+    use super::*;
+    use crate::phase::OscillatorPhase;
+    use quickcheck::{quickcheck, Arbitrary, Gen, TestResult, Testable};
+
+    // Given a band-limited Oscillator implementation and the band-unlimited
+    // signal that it tries to reproduce, check that the output is reasonable
+    pub(crate) fn test_oscillator<O: Oscillator>(unlimited_signal: fn(AudioPhase) -> AudioSample) {
+        test_low_freq_limit::<O>(unlimited_signal);
+        test_high_freq_limit::<O>();
+        test_any_freq::<O>();
+    }
+
+    /// Test that the band-limited oscillator is close to the unlimited signal
+    /// when the oscillator frequency is much lower than the Nyquist limit.
+    fn test_low_freq_limit<O: Oscillator>(unlimited_signal: fn(AudioPhase) -> AudioSample) {
+        let sampling_rate = (2 as SamplingRateHz).pow(f32::MANTISSA_DIGITS) + 1;
+        let oscillator_freq = 20.0;
+
+        // HACK: quickcheck doesn't support closures due to quickcheck#56, which
+        //       is itself blocked by rust#25041, so we need to massage our test
+        //       closure a bit before quickcheck will accept it...
+        //
+        struct QuickCheckTest<Closure: Fn(AudioPhase) -> TestResult + Send + 'static>(Closure);
+        //
+        impl<Closure> Testable for QuickCheckTest<Closure>
+        where
+            Closure: Fn(AudioPhase) -> TestResult + Send + 'static,
+        {
+            fn result<G: Gen>(&self, gen: &mut G) -> TestResult {
+                let phase = AudioPhase::arbitrary(gen);
+                (self.0)(phase)
+            }
+        }
+        //
+        quickcheck(QuickCheckTest(move |initial_phase| {
+            let oscillator = O::new(sampling_rate, oscillator_freq, initial_phase);
+            let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
+            for (sample, phase) in oscillator.zip(phase).take(2 * phase.cycle_length()) {
+                // TODO: This will probably need a tolerance
+                assert_eq!(sample, unlimited_signal(phase));
+            }
+            TestResult::passed()
+        }))
+    }
+
+    /// Test that the band-limited oscillator is a perfect sine when the
+    /// oscillator frequency is above half or the Nyquist limit.
+    fn test_high_freq_limit<O: Oscillator>() {
+        todo!()
+    }
+
+    /// Test general properties of the band-limited oscillator in the
+    /// intermediate regime between these two extreme scenarios: periodicity,
+    /// amplitude...
+    fn test_any_freq<O: Oscillator>() {
+        todo!()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{

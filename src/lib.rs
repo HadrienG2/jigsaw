@@ -86,12 +86,24 @@ impl Iterator for ReferenceSaw {
 // TODO: Rework oscillators so that they accept an in-situ filter for the
 //       purpose of avoiding Gibbs phenomenon when it is undesirable.
 
-// TODO: Add correctness tests
+// TODO: Add correctness tests of the reference saw
+// TODO: Test correctness of other saws by comparing them to the reference
 #[cfg(test)]
 mod tests {
-    // TODO: Test min_x_freq functions
+    use super::*;
+    use phase::AudioPhaseMod;
+    use synthesis::test_tools::test_oscillator;
+
+    /// Continuous saw signal without band limiting
+    fn unlimited_saw(phase: AudioPhase) -> AudioSample {
+        use AudioPhaseMod::consts::PI;
+        ((phase / PI) + 1.0) % 2.0 - 1.0
+    }
+
+    /// Test that our reference band-limited saw matches its continuous cousin
+    /// that did not receive any band limiting.
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn reference_saw() {
+        test_oscillator::<ReferenceSaw>(unlimited_saw);
     }
 }

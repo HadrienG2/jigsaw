@@ -36,7 +36,7 @@ pub fn min_oscillator_freq(sampling_rate: SamplingRateHz) -> AudioFrequency {
 // capable of rendrering.
 //
 pub type AudioPhase = f32;
-use std::f32 as AudioPhaseMod;
+pub use std::f32 as AudioPhaseMod;
 
 /// Validate a user-provided audio phase
 ///
@@ -203,6 +203,12 @@ impl OscillatorPhase {
             sample_idx: 0.0,
             sample_idx_cycle,
         }
+    }
+
+    /// Tell what the length of the phase cycle is
+    #[cfg(test)]
+    pub(crate) fn cycle_length(&self) -> usize {
+        self.sample_idx_cycle as _
     }
 }
 

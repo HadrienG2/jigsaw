@@ -4,6 +4,25 @@ use crate::{AudioFrequency, SamplingRateHz};
 use core::num::FpCategory;
 use log::warn;
 
+/// Minimum oscillator frequency that the phase generation algorithm can handle,
+/// normalized by the sampling rate in use.
+///
+/// This limitation comes from the fact that for a precise computation, the
+/// sample counter must be exactly convertible to float, but the smaller the
+/// frequency is, the larget the sample counter wraparound cycle becomes...
+///
+// TODO: Constify this once Rust allows for it
+pub fn min_relative_freq() -> AudioFrequency {
+    (2.0 as AudioFrequency).powi(-(AudioPhase::MANTISSA_DIGITS as i32))
+}
+
+/// Minimum oscillator frequency that the phase generation algorithm can handle
+/// at a given sampling rate.
+pub fn min_oscillator_freq(sampling_rate: SamplingRateHz) -> AudioFrequency {
+    assert_ne!(sampling_rate, 0, "Input sampling rate should be nonzero");
+    min_relative_freq() * (sampling_rate as AudioFrequency)
+}
+
 /// Floating-point type suitable for storing an audio signal's phase
 //
 // Single precision enables storing audio phases with 10^-7 precision. Through
@@ -25,24 +44,13 @@ use std::f32 as AudioPhaseMod;
 ///
 type SampleCounter = AudioPhase;
 
-/// Minimum relative oscillator frequency that can be handled by this algorithm
-///
-/// This limitation comes from the fact that for a precise computation, the
-/// sample counter must be exactly convertible to float, but the smaller the
-/// frequency is, the larget the sample counter wraparound cycle becomes...
-///
-// TODO: Constify this when possible.
-pub(crate) fn min_relative_freq() -> AudioFrequency {
-    (2.0 as AudioFrequency).powi(-(AudioPhase::MANTISSA_DIGITS as i32))
-}
-
 /// Simulate an oscillator's phase signal as a stream of audio-like samples
 ///
 /// To avoid floating-point accuracy issues, the phase signal will be reset
 /// after an unspecified number of 2*pi cycles and should only be relied on in
 /// "modulo 2*pi" sorts of operations, like sinus computations.
 ///
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct OscillatorPhase {
     // Initial oscillator phase
     phase_offset: AudioPhase,
@@ -220,38 +228,89 @@ impl Iterator for OscillatorPhase {
 #[cfg(test)]
 mod tests {
     use super::{AudioPhaseMod::consts::TAU, *};
-    use crate::{min_oscillator_freq, NonZeroSamplingRate};
-    use quickcheck::quickcheck;
+    use crate::NonZeroSamplingRate;
+    use quickcheck::{quickcheck, TestResult};
     use std::panic::{catch_unwind, UnwindSafe};
 
-    /* sampling_rate: SamplingRateHz,
-    oscillator_freq: AudioFrequency,
-    initial_phase: AudioPhase, */
-
-    /* phase_offset,
-    phase_increment,
-    sample_idx: 0.0,
-    sample_idx_cycle,*/
-
+    /// Check that a function panics when called
     fn panics<R>(f: impl FnOnce() -> R + UnwindSafe) -> bool {
         catch_unwind(f).is_err()
     }
 
+    /// We only test sampling rates above 44100 Hz because...
+    /// 1. It is a minimum for perfect audio fidelity, which we should aim for
+    /// 2. Few modern sound cards support less than this in hardware
+    fn is_standard_rate(rate: NonZeroSamplingRate) -> bool {
+        rate.get() >= 44100
+    }
+
+    /// Test that a requested oscillator frequency falls into the ideal range.
+    /// Other frequencies are tested via specific edge-case tests.
     fn is_standard_freq(rate: NonZeroSamplingRate, freq: AudioFrequency) -> bool {
         let rate_flt = rate.get() as AudioFrequency;
         freq.is_finite() && freq >= min_relative_freq() && freq < rate_flt / 2.0
     }
 
+    /// Test that a requested oscillator phase falls into the ideal range.
+    /// Other phases are tested via specific edge-case tests.
     fn is_standard_offset(offset: AudioPhase) -> bool {
         offset.is_normal()
     }
 
-    quickcheck! {
-        fn zero_sampling(freq: AudioFrequency, offset: AudioPhase) -> bool {
-            panics(|| min_oscillator_freq(0))
-                && panics(|| OscillatorPhase::new(0, freq, offset))
+    /// Test that an oscillator's phase has expected initial state and behavior
+    ///
+    /// This test is only appropriate for configurations where the
+    /// OscillatorPhase can be successfully constructed. It constructs it for
+    /// you, tests all relevant properties, and returns the result.
+    fn test_phase(
+        rate: SamplingRateHz,
+        freq: AudioFrequency,
+        offset: AudioPhase,
+    ) -> OscillatorPhase {
+        // Make sure the right initial state was produced
+        let initial_phase = OscillatorPhase::new(rate, freq, offset);
+        let rate_flt = rate as AudioFrequency;
+        assert_eq!(initial_phase.phase_offset, offset % TAU);
+        assert_eq!(initial_phase.phase_increment, TAU * freq / rate_flt);
+        assert_eq!(initial_phase.sample_idx, 0.0);
+        assert_eq!(
+            (initial_phase.sample_idx_cycle * initial_phase.phase_increment).fract() % TAU,
+            0.0
+        );
+
+        // Make sure the output is right for this initial state
+        let mut phase = initial_phase;
+        let sample_idx_cycle = phase.sample_idx_cycle as u32;
+        for i in 0..2 * sample_idx_cycle {
+            let expected = phase.phase_offset + (i as AudioPhase) * phase.phase_increment;
+            assert_eq!(phase.next(), Some(expected % TAU));
         }
 
+        // Return the OscillatorPhase for further tests
+        initial_phase
+    }
+
+    quickcheck! {
+        /// Test reasonable sampling rates, frequencies, and offset values
+        fn general_case(rate: NonZeroSamplingRate,
+                        freq: AudioFrequency,
+                        offset: AudioPhase) -> TestResult {
+            // Avoid edge cases which are left to dedicated tests
+            if !(is_standard_rate(rate) && is_standard_freq(rate, freq) && is_standard_offset(offset)) {
+                return TestResult::discard();
+            }
+
+            // Build an oscillator and check it matches expectations
+            test_phase(rate.get(), freq, offset);
+            TestResult::passed()
+        }
+
+        /// Test zero sampling rate edge cases
+        fn zero_sampling(freq: AudioFrequency, offset: AudioPhase) -> bool {
+            panics(|| OscillatorPhase::new(0, freq, offset))
+        }
+
+        /// Test non finite oscillator frequency edge case
         fn non_finite_freq(rate: NonZeroSamplingRate, offset: AudioPhase) -> bool {
             let rate = rate.get();
             panics(|| OscillatorPhase::new(rate, AudioFrequency::NAN, offset))
@@ -259,36 +318,26 @@ mod tests {
                 && panics(|| OscillatorPhase::new(rate, AudioFrequency::NEG_INFINITY, offset))
         }
 
-        fn zero_freq(rate: NonZeroSamplingRate, offset: AudioPhase) -> bool {
+        /// Test tiny frequency edge case
+        fn tiny_freqs(rate: NonZeroSamplingRate, offset: AudioPhase) -> TestResult {
             // Avoid edge cases which are left to dedicated tests
-            if !is_standard_offset(offset) {
-                return true;
+            if !(is_standard_rate(rate) && is_standard_offset(offset)) {
+                return TestResult::discard();
             }
 
             // Build and test the oscillator
-            let phase = OscillatorPhase::new(rate.get(), 0.0, offset);
-            (phase.phase_offset == offset % TAU)
-                && (phase.phase_increment == 0.0)
-                && (phase.sample_idx == 0.0)
-                && (phase.sample_idx_cycle == 1.0)
+            let rate = rate.get();
+            let min_oscillator_freq = min_oscillator_freq(rate);
+            let small = test_phase(rate, min_oscillator_freq, offset);
+            let zero = test_phase(rate, 0.0, offset);
+            assert_eq!(OscillatorPhase::new(rate, 0.99 * min_oscillator_freq, offset), small);
+            assert_eq!(OscillatorPhase::new(rate, 0.5 * min_oscillator_freq, offset), small);
+            assert_eq!(OscillatorPhase::new(rate, 0.49 * min_oscillator_freq, offset), zero);
+            assert_eq!(OscillatorPhase::new(rate, 0.01 * min_oscillator_freq, offset), zero);
+            TestResult::passed()
         }
 
-        fn tiny_freq(rate: NonZeroSamplingRate, offset: AudioPhase) -> bool {
-            // Avoid edge cases which are left to dedicated tests
-            if !is_standard_offset(offset) {
-                return true;
-            }
-
-            // Build and test the oscillator
-            let min_oscillator_freq = min_oscillator_freq(rate.get());
-            let small = OscillatorPhase::new(rate.get(), min_oscillator_freq, offset);
-            let tiny = OscillatorPhase::new(rate.get(), 0.0, offset);
-            (OscillatorPhase::new(rate.get(), 0.99 * min_oscillator_freq, offset) == small)
-                && (OscillatorPhase::new(rate.get(), 0.5 * min_oscillator_freq, offset) == small)
-                && (OscillatorPhase::new(rate.get(), 0.49 * min_oscillator_freq, offset) == tiny)
-                && (OscillatorPhase::new(rate.get(), 0.01 * min_oscillator_freq, offset) == tiny)
-        }
-
+        /// Test non finite phase edge case
         fn non_finite_offset(rate: NonZeroSamplingRate, freq: AudioFrequency) -> bool {
             let rate = rate.get();
             panics(|| OscillatorPhase::new(rate, freq, AudioPhase::NAN))
@@ -296,38 +345,19 @@ mod tests {
                 && panics(|| OscillatorPhase::new(rate, freq, AudioPhase::NEG_INFINITY))
         }
 
-        fn subnormal_offset(rate: NonZeroSamplingRate, freq: AudioFrequency) -> bool {
+        /// Test subnormal offset edge case
+        fn subnormal_offset(rate: NonZeroSamplingRate, freq: AudioFrequency) -> TestResult {
             // Avoid edge cases which are left to dedicated tests
-            if !is_standard_freq(rate, freq) {
-                return true;
+            if !(is_standard_rate(rate) && is_standard_freq(rate, freq)) {
+                return TestResult::discard();
             }
 
             // Check that subnormal offsets are flushed to zero
             let rate = rate.get();
-            let zero = OscillatorPhase::new(rate, freq, 0.0);
-            OscillatorPhase::new(rate, freq, 0.99 * AudioPhase::MIN_POSITIVE) == zero
+            let zero = test_phase(rate, freq, 0.0);
+            assert_eq!(OscillatorPhase::new(rate, freq, 0.99 * AudioPhase::MIN_POSITIVE), zero);
+            assert_eq!(OscillatorPhase::new(rate, freq, 0.01 * AudioPhase::MIN_POSITIVE), zero);
+            TestResult::passed()
         }
-
-        fn general_case(rate: NonZeroSamplingRate, freq: AudioFrequency, offset: AudioPhase) -> bool {
-            // Avoid edge cases which are left to dedicated tests
-            if !(is_standard_freq(rate, freq) && is_standard_offset(offset)) {
-                return true;
-            }
-
-            // Build an oscillator and check it matches expectations
-            let phase = OscillatorPhase::new(rate.into(), freq, offset);
-            let rate_flt = rate.get() as AudioFrequency;
-            (phase.phase_offset == offset % TAU)
-                && (phase.phase_increment == TAU * freq / rate_flt)
-                && (phase.sample_idx == 0.0)
-                && ((phase.sample_idx_cycle * phase.phase_increment).fract() % TAU == 0.0)
-        }
-
-        // FIXME: In those cases where the constructor works, test iteration
-    }
-
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
     }
 }

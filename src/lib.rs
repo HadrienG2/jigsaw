@@ -1,13 +1,7 @@
 mod phase;
 
+pub use phase::min_oscillator_freq;
 use phase::{AudioPhase, OscillatorPhase};
-
-/// Compute the minimal oscillator frequency that the algorithm can handle at
-/// a given sampling rate.
-pub fn min_oscillator_freq(sampling_rate: SamplingRateHz) -> AudioFrequency {
-    assert_ne!(sampling_rate, 0, "Input sampling rate should be nonzero");
-    phase::min_relative_freq() * (sampling_rate as AudioFrequency)
-}
 
 // === FOUNDATIONAL TYPES ===
 
@@ -139,6 +133,7 @@ impl Iterator for ReferenceSaw {
 // TODO: Add correctness tests
 #[cfg(test)]
 mod tests {
+    // TODO: Test min_x_freq functions
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);

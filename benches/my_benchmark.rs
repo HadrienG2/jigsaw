@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use jigsaw::ReferenceSaw;
+use jigsaw::{Oscillator, ReferenceSaw};
 
 pub fn saw_benchmark(criterion: &mut Criterion) {
     for sample_rate in [44_100, 96_000, 192_000].iter().copied() {

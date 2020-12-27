@@ -88,6 +88,9 @@ impl Iterator for ReferenceSaw {
 // TODO: Implement the sinus avoidance optimizations that this project has
 //       always been meant to test, compare precision and performance.
 
+// TODO: Rework oscillators so that they accept an in-situ filter for the
+//       purpose of avoiding Gibbs phenomenon when it is undesirable.
+
 // TODO: Add correctness tests
 #[cfg(test)]
 mod tests {

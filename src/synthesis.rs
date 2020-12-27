@@ -65,5 +65,8 @@ pub trait Oscillator: Iterator<Item = AudioSample> {
 
 #[cfg(test)]
 mod tests {
-    // TODO: Add correctness tests
+    // TODO: Add correctness tests, including a generic oscillator test that
+    //       takes the band-unlimited version as input and compares against it
+    //       for a very high sampling rate / frequency ratio (say,
+    //       2^f32::MANTISSA_BITS), where the two versions should be ~identical.
 }

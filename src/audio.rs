@@ -53,6 +53,34 @@ pub(crate) fn validate_sampling_rate(rate: SamplingRateHz) -> bool {
 //
 pub type AudioFrequency = f32;
 
+/// Validate a user-provided audio frequency
+///
+/// This function will panic if the input is fundamentally incorrect, and return
+/// false if the input is not ideal but can be used with a reasonable chance of
+/// partial success (e.g. slightly inaccurate result)..
+///
+pub(crate) fn validate_audio_frequency(
+    (sampling_rate, freq): (SamplingRateHz, AudioFrequency),
+) -> bool {
+    // Check that oscillator frequency is not IEEE-754 madness.
+    assert!(freq.is_finite(), "Audio frequency should be finite");
+
+    // Warn if frequency is subnormal, as it will lead to inaccurate results
+    let mut is_ideal = true;
+    if !freq.is_normal() {
+        is_ideal = false;
+        warn!("This crate is neither designed nor tested for subnormal audio frequencies");
+    }
+
+    // Check that the requested oscillator frequency honors the
+    // Shannon-Nyquist criterion.
+    assert!(
+        freq < (sampling_rate as AudioFrequency) / 2.0,
+        "Audio frequency should honor the Shannon-Nyquist criterion"
+    );
+    is_ideal
+}
+
 /// Floating-point type suitable for storing audio samples
 //
 // Single precision gives us a precision equivalent to 24-bit integers, which

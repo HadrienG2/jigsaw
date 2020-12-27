@@ -10,7 +10,7 @@ use log::warn;
 /// This limitation comes from the fact that for a precise computation, the
 /// sample counter must be exactly convertible to float, but the smaller the
 /// frequency is, the larget the sample counter wraparound cycle becomes...
-///
+//
 // TODO: Constify this once Rust allows for it
 pub fn min_relative_freq() -> AudioFrequency {
     (2.0 as AudioFrequency).powi(-(AudioPhase::MANTISSA_DIGITS as i32))
@@ -18,6 +18,8 @@ pub fn min_relative_freq() -> AudioFrequency {
 
 /// Minimum oscillator frequency that the phase generation algorithm can handle
 /// at a given sampling rate.
+//
+// TODO: Constify this once Rust allows for it
 pub fn min_oscillator_freq(sampling_rate: SamplingRateHz) -> AudioFrequency {
     audio::validate_sampling_rate(sampling_rate);
     min_relative_freq() * (sampling_rate as AudioFrequency)
@@ -84,28 +86,9 @@ impl OscillatorPhase {
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self {
-        // Check that the sampling rate is sensible
+        // Check that sample rate and frequency mostly make sense
         audio::validate_sampling_rate(sampling_rate);
-        let sampling_rate = sampling_rate as AudioFrequency;
-
-        // Check that oscillator frequency is not IEEE-754 madness. We tolerate
-        // subnormal numbers as we have a coarser threshold on excessively low
-        // frequencies that will be applied later on.
-        assert!(
-            oscillator_freq.is_finite(),
-            "Oscillator frequency should be finite"
-        );
-
-        // Normalize the frequency by the sampling rate
-        let mut relative_freq = oscillator_freq / sampling_rate;
-
-        // Check that the requested oscillator frequency honors the
-        // Shannon-Nyquist criterion. After all, the whole point of this crate
-        // is to generate band-limited signals...
-        assert!(
-            relative_freq.abs() < 0.5,
-            "Oscillator frequency should honor the Shannon-Nyquist criterion"
-        );
+        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
 
         // Check that the oscillator frequency can be handled by our internal
         // processing, if not adjust to the closest supported one.
@@ -116,6 +99,8 @@ impl OscillatorPhase {
         // When you do the math of checking what is the breakdown point, you end
         // up on this minimal frequency criterion.
         //
+        let sampling_rate = sampling_rate as AudioFrequency;
+        let mut relative_freq = oscillator_freq / sampling_rate;
         let min_relative_freq = min_relative_freq();
         if relative_freq != 0.0 && relative_freq.abs() < min_relative_freq {
             warn!("Oscillator frequency cannot be honored exactly and will be rounded");
@@ -234,6 +219,17 @@ mod tests {
         catch_unwind(f).is_err()
     }
 
+    /// Check that a certain user input passes maximally rigorous validation
+    fn fully_valid<I: UnwindSafe>(
+        input: I,
+        validation: impl FnOnce(I) -> bool + UnwindSafe,
+    ) -> bool {
+        match catch_unwind(|| validation(input)) {
+            Ok(true) => true,
+            Ok(false) | Err(_) => false,
+        }
+    }
+
     /// We only test sampling rates above 44100 Hz because...
     /// 1. It is a minimum for perfect audio fidelity, which we should aim for
     /// 2. Few modern sound cards support less than this in hardware
@@ -242,14 +238,15 @@ mod tests {
     /// because no sound card will support them for any foreseeable future.
     ///
     fn is_standard_rate(rate: NonZeroSamplingRate) -> bool {
-        audio::validate_sampling_rate(rate.get())
+        fully_valid(rate.get(), audio::validate_sampling_rate)
     }
 
     /// Test that a requested oscillator frequency falls into the ideal range.
     /// Other frequencies are tested via specific edge-case tests.
     fn is_standard_freq(rate: NonZeroSamplingRate, freq: AudioFrequency) -> bool {
-        let rate_flt = rate.get() as AudioFrequency;
-        freq.is_finite() && freq >= min_relative_freq() && freq < rate_flt / 2.0
+        let rate = rate.get();
+        fully_valid((rate, freq), audio::validate_audio_frequency)
+            && freq >= min_oscillator_freq(rate)
     }
 
     /// Test that a requested oscillator phase falls into the ideal range.

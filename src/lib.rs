@@ -36,9 +36,12 @@ impl Oscillator for ReferenceSaw {
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self {
-        // Set up the oscillator's phase clock
+        // Validate user inputs
         audio::validate_sampling_rate(sampling_rate);
-        // TODO: Validate oscillator_freq
+        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
+        // TODO: Validate initial_phase
+
+        // Set up the phase clock
         let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
 
         // Determine how many harmonics must be generated

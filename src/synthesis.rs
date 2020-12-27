@@ -8,6 +8,9 @@ use crate::{audio, AudioFrequency, AudioPhase, AudioSample, SamplingRateHz};
 // frequencies are above 1 Hz, which includes the whole audio range...
 pub(crate) type HarmonicsCounter = SamplingRateHz;
 
+/// Number of bits of the HarmonicsCounter integer type
+const HARMONICS_COUNTER_BITS: u32 = (std::mem::size_of::<HarmonicsCounter>() as u32) * 8;
+
 /// For oscillators whose analog counterpart have infinite frequency content,
 /// such as sawtooth or square waves, tell how many harmonics must be generated
 /// in order to get a maximally accurate band-limited signal.
@@ -15,12 +18,15 @@ pub(crate) fn band_limited_harmonics(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
 ) -> HarmonicsCounter {
+    // Check that the inputs make sense
     audio::validate_sampling_rate(sampling_rate);
-    // TODO: Validate oscillator_freq
+    audio::validate_audio_frequency((sampling_rate, oscillator_freq));
+
+    // Compute the number of harmonics of a band-limited signal
     let nyquist_frequency = (sampling_rate as AudioFrequency) / 2.0;
     let num_harmonics = (nyquist_frequency / oscillator_freq).trunc();
     assert!(
-        num_harmonics < (2.0 as AudioFrequency).powi(32),
+        num_harmonics < (2.0 as AudioFrequency).powi(HARMONICS_COUNTER_BITS as i32),
         "Oscillator frequency is too low, harmonics count overflows counter"
     );
     num_harmonics as _
@@ -30,8 +36,7 @@ pub(crate) fn band_limited_harmonics(
 /// band_limited_harmonics(), can be losslessly converted to a floating-point
 /// type with a mantissa of N bits.
 pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantissa_bits: u32) {
-    let harmonic_counter_bits = std::mem::size_of::<HarmonicsCounter>() * 8;
-    if (mantissa_bits as usize) < harmonic_counter_bits {
+    if mantissa_bits < HARMONICS_COUNTER_BITS {
         assert!(
             num_harmonics <= (2 as HarmonicsCounter).pow(mantissa_bits),
             "Too many harmonics to accurately represent them as floating-point",

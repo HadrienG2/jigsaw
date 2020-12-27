@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use jigsaw::ReferenceSaw;
 
 pub fn saw_benchmark(criterion: &mut Criterion) {
@@ -9,7 +9,7 @@ pub fn saw_benchmark(criterion: &mut Criterion) {
             group.throughput(Throughput::Elements(1));
 
             let mut reference_saw = ReferenceSaw::new(sample_rate, saw_freq, 0.0);
-            group.bench_function("Reference", |b| b.iter(|| black_box(reference_saw.next())));
+            group.bench_function("Reference", |b| b.iter(|| reference_saw.next()));
         }
     }
 }

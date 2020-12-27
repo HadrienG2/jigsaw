@@ -23,10 +23,10 @@ pub(crate) fn band_limited_harmonics(
     audio::validate_audio_frequency((sampling_rate, oscillator_freq));
 
     // Compute the number of harmonics of a band-limited signal
-    let nyquist_frequency = (sampling_rate as AudioFrequency) / 2.0;
+    let nyquist_frequency = audio::nyquist_frequency(sampling_rate);
     let num_harmonics = (nyquist_frequency / oscillator_freq).trunc();
     assert!(
-        num_harmonics < (2.0 as AudioFrequency).powi(HARMONICS_COUNTER_BITS as i32),
+        num_harmonics <= HarmonicsCounter::MAX as AudioFrequency,
         "Oscillator frequency is too low, harmonics count overflows counter"
     );
     num_harmonics as _
@@ -71,6 +71,56 @@ pub trait Oscillator: Iterator<Item = AudioSample> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::audio::{test_tools as audio_tests, NonZeroSamplingRate};
+    use audio_tests::{is_standard_rate, panics};
+
+    mod band_limited_harmonics {
+        use super::*;
+        use quickcheck::{quickcheck, TestResult};
+
+        /// Minimal input frequency for this function
+        fn min_freq(rate: SamplingRateHz) -> AudioFrequency {
+            let max_harmonics = HarmonicsCounter::MAX as AudioFrequency;
+            audio::nyquist_frequency(rate) / max_harmonics
+        }
+
+        /// Test that a requested oscillator frequency falls into the ideal range.
+        /// Other frequencies are tested via specific edge-case tests.
+        fn is_standard_freq(rate: NonZeroSamplingRate, freq: AudioFrequency) -> bool {
+            audio_tests::is_standard_freq(rate, freq) && freq <= min_freq(rate.get())
+        }
+
+        quickcheck! {
+            /// Test reasonable sampling rates and frequencies
+            fn general_case(rate: NonZeroSamplingRate, freq: AudioFrequency) -> TestResult {
+                // Avoid edge cases which are left to dedicated tests
+                if !(is_standard_rate(rate) && is_standard_freq(rate, freq)) {
+                    return TestResult::discard();
+                }
+
+                // Check the amount of band-limited harmonics
+                // TODO: Handle "too many harmonics scenario as a separate test
+                let rate = rate.get();
+                let num_harmonics = band_limited_harmonics(rate, freq);
+                let num_harmonics = num_harmonics as AudioFrequency;
+                let nyquist_frequency = audio::nyquist_frequency(rate);
+                assert!(num_harmonics * freq <= nyquist_frequency);
+                assert!((num_harmonics + 1.0) * freq > nyquist_frequency);
+                TestResult::passed()
+            }
+
+            /// Test excessively low frequencies
+            fn too_many_harmonics(rate: NonZeroSamplingRate) -> bool {
+                let rate = rate.get();
+                panics(|| band_limited_harmonics(rate, 0.99 * min_freq(rate)))
+                    && panics(|| band_limited_harmonics(rate, 0.01 * min_freq(rate)))
+            }
+        }
+    }
+
+    // TODO: Test other functionality
+
     // TODO: Add correctness tests, including a generic oscillator test that
     //       takes the band-unlimited version as input and compares against it
     //       for a very high sampling rate / frequency ratio (say,

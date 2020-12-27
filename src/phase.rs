@@ -220,49 +220,20 @@ impl Iterator for OscillatorPhase {
 #[cfg(test)]
 mod tests {
     use super::{AudioPhaseMod::consts::TAU, *};
-    use crate::audio::NonZeroSamplingRate;
+    use crate::audio::{test_tools as audio_tests, NonZeroSamplingRate};
+    use audio_tests::{is_standard_rate, panics};
     use quickcheck::{quickcheck, TestResult};
-    use std::panic::{catch_unwind, UnwindSafe};
-
-    /// Check that a function panics when called
-    fn panics<R>(f: impl FnOnce() -> R + UnwindSafe) -> bool {
-        catch_unwind(f).is_err()
-    }
-
-    /// Check that a certain user input passes maximally rigorous validation
-    fn fully_valid<I: UnwindSafe>(
-        input: I,
-        validation: impl FnOnce(I) -> bool + UnwindSafe,
-    ) -> bool {
-        match catch_unwind(|| validation(input)) {
-            Ok(true) => true,
-            Ok(false) | Err(_) => false,
-        }
-    }
-
-    /// We only test sampling rates above 44100 Hz because...
-    /// 1. It is a minimum for perfect audio fidelity, which we should aim for
-    /// 2. Few modern sound cards support less than this in hardware
-    ///
-    /// We do not test sampling rates which cannot be accurately stored as float
-    /// because no sound card will support them for any foreseeable future.
-    ///
-    fn is_standard_rate(rate: NonZeroSamplingRate) -> bool {
-        fully_valid(rate.get(), audio::validate_sampling_rate)
-    }
 
     /// Test that a requested oscillator frequency falls into the ideal range.
     /// Other frequencies are tested via specific edge-case tests.
     fn is_standard_freq(rate: NonZeroSamplingRate, freq: AudioFrequency) -> bool {
-        let rate = rate.get();
-        fully_valid((rate, freq), audio::validate_audio_frequency)
-            && freq >= min_oscillator_freq(rate)
+        audio_tests::is_standard_freq(rate, freq) && freq >= min_oscillator_freq(rate.get())
     }
 
     /// Test that a requested oscillator phase falls into the ideal range.
     /// Other phases are tested via specific edge-case tests.
     fn is_standard_offset(offset: AudioPhase) -> bool {
-        fully_valid(offset, validate_audio_phase)
+        audio_tests::is_standard(offset, validate_audio_phase)
     }
 
     /// Test that an oscillator's phase has expected initial state and behavior

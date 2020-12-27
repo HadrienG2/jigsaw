@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub use crate::{
-    audio::{AudioFrequency, AudioSample, SamplingRateHz},
+    audio::{AudioFrequency, AudioSample, SamplingRateHz, MIN_SAMPLING_RATE},
     phase::min_oscillator_freq,
     synthesis::Oscillator,
 };
@@ -37,6 +37,8 @@ impl Oscillator for ReferenceSaw {
         initial_phase: AudioPhase,
     ) -> Self {
         // Set up the oscillator's phase clock
+        audio::validate_sampling_rate(sampling_rate);
+        // TODO: Validate oscillator_freq
         let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
 
         // Determine how many harmonics must be generated

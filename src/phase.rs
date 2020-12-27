@@ -1,6 +1,6 @@
 //! Mechanism for generating oscillator phase signals
 
-use crate::{AudioFrequency, SamplingRateHz};
+use crate::{audio, AudioFrequency, SamplingRateHz};
 use core::num::FpCategory;
 use log::warn;
 
@@ -19,7 +19,7 @@ pub fn min_relative_freq() -> AudioFrequency {
 /// Minimum oscillator frequency that the phase generation algorithm can handle
 /// at a given sampling rate.
 pub fn min_oscillator_freq(sampling_rate: SamplingRateHz) -> AudioFrequency {
-    assert_ne!(sampling_rate, 0, "Input sampling rate should be nonzero");
+    audio::validate_sampling_rate(sampling_rate);
     min_relative_freq() * (sampling_rate as AudioFrequency)
 }
 
@@ -85,10 +85,7 @@ impl OscillatorPhase {
         initial_phase: AudioPhase,
     ) -> Self {
         // Check that the sampling rate is sensible
-        assert_ne!(sampling_rate, 0, "Input sampling rate should be nonzero");
-        if sampling_rate > (2 as SamplingRateHz).pow(AudioFrequency::MANTISSA_DIGITS) {
-            warn!("Sampling rate cannot be honored exactly and will be rounded");
-        }
+        audio::validate_sampling_rate(sampling_rate);
         let sampling_rate = sampling_rate as AudioFrequency;
 
         // Check that oscillator frequency is not IEEE-754 madness. We tolerate
@@ -241,7 +238,7 @@ mod tests {
     /// 1. It is a minimum for perfect audio fidelity, which we should aim for
     /// 2. Few modern sound cards support less than this in hardware
     fn is_standard_rate(rate: NonZeroSamplingRate) -> bool {
-        rate.get() >= 44100
+        rate.get() >= crate::MIN_SAMPLING_RATE
     }
 
     /// Test that a requested oscillator frequency falls into the ideal range.

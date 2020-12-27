@@ -1,6 +1,6 @@
 //! Utilities for audio synthesis
 
-use crate::{AudioFrequency, AudioPhase, AudioSample, SamplingRateHz};
+use crate::{audio, AudioFrequency, AudioPhase, AudioSample, SamplingRateHz};
 
 /// Type suitable for storing oscillator harmonics
 //
@@ -15,7 +15,8 @@ pub(crate) fn band_limited_harmonics(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
 ) -> HarmonicsCounter {
-    // TODO: Check correctness of oscillator_freq
+    audio::validate_sampling_rate(sampling_rate);
+    // TODO: Validate oscillator_freq
     let nyquist_frequency = (sampling_rate as AudioFrequency) / 2.0;
     let num_harmonics = (nyquist_frequency / oscillator_freq).trunc();
     assert!(

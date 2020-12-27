@@ -46,11 +46,17 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
 
 /// Compute the n-th harmonic number, that is, sum(1..=n, 1/n)
 pub(crate) fn harmonic_number(num_harmonics: HarmonicsCounter) -> AudioSample {
-    // TODO: Find out after how many harmonics this sum becomes wrong by more
-    //       than 2^-24 and assert that this limit is not reached.
-    (1..=num_harmonics)
+    let prev_number = (1..num_harmonics)
         .map(|harmonic| 1.0 / (harmonic as f64))
-        .sum::<f64>() as AudioSample
+        .sum::<f64>();
+    let curr_contrib = 1.0 / (num_harmonics as f64);
+    let result = prev_number + curr_contrib;
+    let error = (result - prev_number) - curr_contrib;
+    assert!(
+        error.abs() < AudioSample::EPSILON.into(),
+        "Too many harmonics to accurately compute the harmonic number"
+    );
+    result as AudioSample
 }
 
 /// This crate is all about implementing digital oscillators for audio synthesis

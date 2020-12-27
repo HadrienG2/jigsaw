@@ -14,5 +14,5 @@ criterion = "0.3"
 quickcheck = "0.9"
 
 [[bench]]
-name = "my_benchmark"
+name = "benchmark"
 harness = false

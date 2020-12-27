@@ -3,6 +3,7 @@
 use crate::{audio, AudioFrequency, SamplingRateHz};
 use core::num::FpCategory;
 use log::warn;
+use more_asserts::*;
 
 /// Minimum oscillator frequency that the phase generation algorithm can handle,
 /// normalized by the sampling rate in use.
@@ -185,8 +186,9 @@ impl OscillatorPhase {
             0.0,
             "Oscillator reset period was not accurately computed, it should have been"
         );
-        debug_assert!(
-            sample_idx_cycle < (2.0 as AudioPhase).powi(AudioPhase::MANTISSA_DIGITS as _),
+        debug_assert_lt!(
+            sample_idx_cycle,
+            (2.0 as AudioPhase).powi(AudioPhase::MANTISSA_DIGITS as _),
             "Sample counter is not exactly representable by AudioPhase, it should be",
         );
 

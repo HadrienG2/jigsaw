@@ -1,6 +1,7 @@
 //! Utilities for audio synthesis
 
 use crate::{audio, AudioFrequency, AudioPhase, AudioSample, SamplingRateHz};
+use more_asserts::*;
 
 /// Type suitable for storing oscillator harmonics
 //
@@ -25,8 +26,9 @@ pub(crate) fn band_limited_harmonics(
     // Compute the number of harmonics of a band-limited signal
     let nyquist_frequency = audio::nyquist_frequency(sampling_rate);
     let num_harmonics = (nyquist_frequency / oscillator_freq).trunc();
-    assert!(
-        num_harmonics <= HarmonicsCounter::MAX as AudioFrequency,
+    assert_le!(
+        num_harmonics,
+        HarmonicsCounter::MAX as AudioFrequency,
         "Oscillator frequency is too low, harmonics count overflows counter"
     );
     num_harmonics as _
@@ -37,8 +39,9 @@ pub(crate) fn band_limited_harmonics(
 /// type with a mantissa of N bits.
 pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantissa_bits: u32) {
     if mantissa_bits < HARMONICS_COUNTER_BITS {
-        assert!(
-            num_harmonics <= (2 as HarmonicsCounter).pow(mantissa_bits),
+        assert_le!(
+            num_harmonics,
+            (2 as HarmonicsCounter).pow(mantissa_bits),
             "Too many harmonics to accurately represent them as floating-point",
         );
     }
@@ -46,14 +49,24 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
 
 /// Compute the n-th harmonic number, that is, sum(1..=n, 1/n)
 pub(crate) fn harmonic_number(num_harmonics: HarmonicsCounter) -> AudioSample {
+    // Handle trivial cases
+    if num_harmonics <= 1 {
+        return num_harmonics as _;
+    }
+
+    // Compute harmonic number, splitting out the last term's computation...
     let prev_number = (1..num_harmonics)
         .map(|harmonic| 1.0 / (harmonic as f64))
         .sum::<f64>();
-    let curr_contrib = 1.0 / (num_harmonics as f64);
-    let result = prev_number + curr_contrib;
-    let error = (result - prev_number) - curr_contrib;
-    assert!(
-        error.abs() < AudioSample::EPSILON.into(),
+    let last_contrib = 1.0 / (num_harmonics as f64);
+    let result = prev_number + last_contrib;
+
+    // ...so that we can check final summation error as a coarse but hopefully
+    // good enough indicator of how wrong the result is.
+    let error = (result - prev_number) - last_contrib;
+    assert_lt!(
+        error.abs(),
+        AudioSample::EPSILON as f64 / 2.0,
         "Too many harmonics to accurately compute the harmonic number"
     );
     result as AudioSample
@@ -77,10 +90,10 @@ mod tests {
         test_tools::panics,
     };
     use audio_tests::is_standard_rate;
+    use quickcheck::{quickcheck, TestResult};
 
     mod band_limited_harmonics {
         use super::*;
-        use quickcheck::{quickcheck, TestResult};
 
         /// Minimal input frequency for this function
         fn min_freq(rate: SamplingRateHz) -> AudioFrequency {
@@ -108,8 +121,8 @@ mod tests {
                 let num_harmonics = band_limited_harmonics(rate, freq);
                 let num_harmonics = num_harmonics as AudioFrequency;
                 let nyquist_frequency = audio::nyquist_frequency(rate);
-                assert!(num_harmonics * freq <= nyquist_frequency);
-                assert!((num_harmonics + 1.0) * freq > nyquist_frequency);
+                assert_le!(num_harmonics * freq, nyquist_frequency);
+                assert_gt!((num_harmonics + 1.0) * freq, nyquist_frequency);
                 TestResult::passed()
             }
 
@@ -122,7 +135,35 @@ mod tests {
         }
     }
 
-    // TODO: Test other functionality
+    quickcheck! {
+        fn check_harmonics_precision(num_harmonics: HarmonicsCounter) -> bool {
+            use super::check_harmonics_precision;
+            assert_eq!(
+                panics(|| check_harmonics_precision(num_harmonics, f32::MANTISSA_DIGITS)),
+                (num_harmonics as f32) as HarmonicsCounter != num_harmonics,
+            );
+            assert_eq!(
+                panics(|| check_harmonics_precision(num_harmonics, f64::MANTISSA_DIGITS)),
+                (num_harmonics as f64) as HarmonicsCounter != num_harmonics,
+            );
+            true
+        }
+
+        fn harmonic_number(num_harmonics: HarmonicsCounter) -> TestResult {
+            use super::harmonic_number;
+            // We expect harmonic number computations to work for band*limited
+            // signals from the beginning of the audio range, on the highest end
+            // sound cards available at the time this crate is released.
+            if num_harmonics >= 1 && num_harmonics < (192_000 / 2) / 20 {
+                let actual = harmonic_number(num_harmonics);
+                let expected = (harmonic_number(num_harmonics - 1) as f64 + 1.0 / (num_harmonics as f64)) as AudioSample;
+                assert_lt!((actual - expected) / expected, AudioSample::EPSILON);
+                TestResult::passed()
+            } else {
+                TestResult::discard()
+            }
+        }
+    }
 
     // TODO: Add correctness tests, including a generic oscillator test that
     //       takes the band-unlimited version as input and compares against it

@@ -1,6 +1,7 @@
 //! Foundation for manipulating audio signals
 
 use log::warn;
+use more_asserts::*;
 
 /// Integer type suitable for storing an audio sampling rate in Hz
 //
@@ -81,8 +82,9 @@ pub(crate) fn validate_audio_frequency(
 
     // Check that the requested oscillator frequency honors the
     // Shannon-Nyquist criterion.
-    assert!(
-        freq < (sampling_rate as AudioFrequency) / 2.0,
+    assert_lt!(
+        freq,
+        (sampling_rate as AudioFrequency) / 2.0,
         "Audio frequency should honor the Shannon-Nyquist criterion"
     );
     is_ideal

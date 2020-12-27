@@ -307,7 +307,8 @@ mod tests {
 
         /// Test zero sampling rate edge cases
         fn zero_sampling(freq: AudioFrequency, offset: AudioPhase) -> bool {
-            panics(|| OscillatorPhase::new(0, freq, offset))
+            panics(|| min_oscillator_freq(0))
+                && panics(|| OscillatorPhase::new(0, freq, offset))
         }
 
         /// Test non finite oscillator frequency edge case

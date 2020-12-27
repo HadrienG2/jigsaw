@@ -19,15 +19,31 @@ pub type NonZeroSamplingRate = core::num::NonZeroU32;
 //
 pub const MIN_SAMPLING_RATE: SamplingRateHz = 44100;
 
+/// Maximal sampling rate that this crate can accurately manipulate
+//
+// TODO: Constify once Rust supports it
+//
+pub fn max_sampling_rate() -> SamplingRateHz {
+    (2 as SamplingRateHz).pow(AudioFrequency::MANTISSA_DIGITS)
+}
+
 /// Validate a user-provided sampling rate
-pub(crate) fn validate_sampling_rate(rate: SamplingRateHz) -> NonZeroSamplingRate {
+///
+/// This function will panic if the input is fundamentally incorrect, and return
+/// false if the input is not ideal but can be used with a reasonable chance of
+/// partial success (e.g. slightly inaccurate result)..
+///
+pub(crate) fn validate_sampling_rate(rate: SamplingRateHz) -> bool {
+    let mut is_ideal = true;
     if rate < MIN_SAMPLING_RATE {
-        warn!("This crate is not tested for such low sampling rates and may break");
+        is_ideal = false;
+        warn!("This crate is neither designed nor tested for such low sampling rates");
+    } else if rate > max_sampling_rate() {
+        is_ideal = false;
+        warn!("This sampling rate cannot be honored exactly and will be rounded off");
     }
-    if rate > (2 as SamplingRateHz).pow(AudioFrequency::MANTISSA_DIGITS) {
-        warn!("Sampling rate cannot be honored exactly and will be rounded");
-    }
-    NonZeroSamplingRate::new(rate).expect("Input sampling rate should be nonzero")
+    assert_ne!(rate, 0, "Input sampling rate should be nonzero");
+    is_ideal
 }
 
 /// Floating-point type suitable for storing audio frequencies

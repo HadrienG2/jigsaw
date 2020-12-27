@@ -237,8 +237,12 @@ mod tests {
     /// We only test sampling rates above 44100 Hz because...
     /// 1. It is a minimum for perfect audio fidelity, which we should aim for
     /// 2. Few modern sound cards support less than this in hardware
+    ///
+    /// We do not test sampling rates which cannot be accurately stored as float
+    /// because no sound card will support them for any foreseeable future.
+    ///
     fn is_standard_rate(rate: NonZeroSamplingRate) -> bool {
-        rate.get() >= crate::MIN_SAMPLING_RATE
+        audio::validate_sampling_rate(rate.get())
     }
 
     /// Test that a requested oscillator frequency falls into the ideal range.

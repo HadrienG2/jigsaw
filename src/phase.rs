@@ -228,7 +228,7 @@ impl Iterator for OscillatorPhase {
 #[cfg(test)]
 mod tests {
     use super::{AudioPhaseMod::consts::TAU, *};
-    use crate::NonZeroSamplingRate;
+    use crate::audio::NonZeroSamplingRate;
     use quickcheck::{quickcheck, TestResult};
     use std::panic::{catch_unwind, UnwindSafe};
 

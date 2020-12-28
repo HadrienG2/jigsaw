@@ -48,6 +48,10 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
 }
 
 /// This crate is all about implementing digital oscillators for audio synthesis
+//
+// TODO: Add support for applying windowing to non-audible harmonics so that the
+//       Gibbs phenomenon is less annoying. The goal is to spread its energy so
+//       that worst-case error goes down.
 pub trait Oscillator: Iterator<Item = AudioSample> {
     /// Set up an oscillator
     fn new(

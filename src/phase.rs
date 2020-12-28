@@ -168,14 +168,14 @@ impl OscillatorPhase {
         // Find the number of trailing zeroes in its mantissa's fraction
         let rel_period_trailing_zeros = rel_period_fraction
             .trailing_zeros()
-            .max(rel_period_fraction_bits);
+            .min(rel_period_fraction_bits);
 
         // From that and the exponent, we can deduce by which power of 2
         // relative_period must be multiplied to yield an integer, i.e. after
         // how many periods the oscillator's phase is an exact multiple of 2*pi.
         let rel_period_significant_bits = rel_period_fraction_bits - rel_period_trailing_zeros;
         let rel_periods_fractional_bits =
-            ((rel_period_significant_bits as i32) - rel_period_exponent).max(0);
+            (rel_period_significant_bits as i32 - rel_period_exponent).max(0);
         let rel_periods_per_cycle = (2.0 as AudioPhase).powi(rel_periods_fractional_bits as _);
 
         // Use that knowledge to deduce on which sample it is safe to reset the
@@ -186,9 +186,9 @@ impl OscillatorPhase {
             0.0,
             "Oscillator reset period was not accurately computed, it should have been"
         );
-        debug_assert_lt!(
+        debug_assert_le!(
             sample_idx_cycle,
-            (2.0 as AudioPhase).powi(AudioPhase::MANTISSA_DIGITS as _),
+            (2.0 as AudioPhase).powi(AudioPhase::MANTISSA_DIGITS as i32 + 1),
             "Sample counter is not exactly representable by AudioPhase, it should be",
         );
 
@@ -203,12 +203,6 @@ impl OscillatorPhase {
             sample_idx: 0.0,
             sample_idx_cycle,
         }
-    }
-
-    /// Tell what the length of the phase cycle is
-    #[cfg(test)]
-    pub(crate) fn cycle_length(&self) -> usize {
-        self.sample_idx_cycle as _
     }
 }
 

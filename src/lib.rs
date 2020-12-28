@@ -62,13 +62,13 @@ impl Iterator for ReferenceSaw {
         // This implementation is meant to be as accurate as possible, not fast.
         // So it uses double precision and avoids "performance over precision"
         // tricks such as turning division into multiplication by inverse.
-        let phase = self.phase.next()? as f64;
+        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let mut accumulator = 0.0;
-        for harmonic in 1..=self.num_harmonics {
+        for harmonic in -(self.num_harmonics as i32)..0 {
             let harmonic = harmonic as f64;
-            accumulator += (harmonic * phase).sin() / harmonic;
+            accumulator -= (harmonic * phase).sin() / harmonic;
         }
-        accumulator /= std::f64::consts::PI;
+        accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)
     }
 }
@@ -96,8 +96,8 @@ mod tests {
 
     /// Continuous saw signal without band limiting
     fn unlimited_saw(phase: AudioPhase) -> AudioSample {
-        use AudioPhaseMod::consts::PI;
-        ((phase / PI) + 1.0) % 2.0 - 1.0
+        use AudioPhaseMod::consts::{PI, TAU};
+        (phase + PI).rem_euclid(TAU) / PI - 1.0
     }
 
     /// Test that our reference band-limited saw matches its continuous cousin

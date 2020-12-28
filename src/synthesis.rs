@@ -62,6 +62,7 @@ pub(crate) mod test_tools {
     use super::*;
     use crate::phase::OscillatorPhase;
     use quickcheck::{quickcheck, Arbitrary, Gen, TestResult, Testable};
+    use std::cmp::Ordering;
 
     // Given a band-limited Oscillator implementation and the band-unlimited
     // signal that it tries to reproduce, check that the output is reasonable
@@ -74,8 +75,11 @@ pub(crate) mod test_tools {
     /// Test that the band-limited oscillator is close to the unlimited signal
     /// when the oscillator frequency is much lower than the Nyquist limit.
     fn test_low_freq_limit<O: Oscillator>(unlimited_signal: fn(AudioPhase) -> AudioSample) {
-        let sampling_rate = (2 as SamplingRateHz).pow(f32::MANTISSA_DIGITS) + 1;
-        let oscillator_freq = 20.0;
+        // This gets us as cose as possible to the non-band-limited case.
+        let oscillator_freq = 20;
+        let sampling_rate =
+            2 * oscillator_freq * (2 as SamplingRateHz).pow(f32::MANTISSA_DIGITS + 1);
+        let oscillator_freq = oscillator_freq as AudioFrequency;
 
         // HACK: quickcheck doesn't support closures due to quickcheck#56, which
         //       is itself blocked by rust#25041, so we need to massage our test
@@ -94,13 +98,77 @@ pub(crate) mod test_tools {
         }
         //
         quickcheck(QuickCheckTest(move |initial_phase| {
+            use crate::phase::AudioPhaseMod::consts::{PI, TAU};
+
+            // Up to 0.9*pi, error is <= 1.5 AudioSample::EPSILON.
+            // This is like a -134 dB audio noise => Should be imperceptible.
+            // At 0.99*pi, error is <= 16 AudioSample::EPSILON.
+            // This is like a -120 dB audio noise: still inaudible, but you
+            // might hear a tiny bit of it if you summed lots and lots of them.
+            // At 0.999*pi, error is <= 256 AudioSample::EPSILON.
+            // This is like the noise of a 16-bit CD recording: audible, but
+            // only if you have very good gear and turn up the volume like crazy.
+            // At 0.9999*pi, error is <= 2048 AudioSample::EPSILON.
+            // ...
+
+            // TODO: Use binary search to figure out where in the phase space
+            //       the error starts going above 1, 2, 4, 8, 16, 32... EPSILON.
+            //       Tabulate this, plot the function, see if it's reasonably
+            //       close to a nice analytical shape.
+            //       If so, fit that shape and make it a parameter of this test,
+            //       instead of using a constant AMPLITUDE_ERROR_THRESHOLD which
+            //       is quite obviously wrong...
+            //       ...then remove the hacks below
+            let proximity_to_pi = 0.9999;
+            let spread = 0.1 * (1.0 - proximity_to_pi);
+            let initial_phase = proximity_to_pi * PI + spread * (initial_phase % TAU);
+
             let oscillator = O::new(sampling_rate, oscillator_freq, initial_phase);
             let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
-            for (sample, phase) in oscillator.zip(phase).take(2 * phase.cycle_length()) {
-                // TODO: This will probably need a tolerance
-                assert_eq!(sample, unlimited_signal(phase));
+            const SAMPLES_PER_TEST: usize = 5;
+            const AMPLITUDE_ERROR_THRESHOLD: AudioSample = 65536.0;
+            let samples = oscillator
+                .zip(phase.map(unlimited_signal))
+                .map(|(limited, unlimited)| {
+                    (
+                        limited,
+                        unlimited,
+                        (limited - unlimited).abs() / AudioSample::EPSILON,
+                    )
+                })
+                .take(SAMPLES_PER_TEST)
+                .collect::<Vec<_>>();
+            println!(
+                "Done performing accuracy test for an initial phase of {} (= {}pi [2pi])",
+                initial_phase,
+                (initial_phase + PI).rem_euclid(TAU) / PI - 1.0
+            );
+            let max_error = samples
+                .iter()
+                .map(|&(_s1, _s2, e)| e)
+                .max_by(|e1, e2| {
+                    if e1 < e2 {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                })
+                .unwrap();
+            if max_error > AMPLITUDE_ERROR_THRESHOLD {
+                println!("Amplitude accuracy was below quality threshold");
+                println!("limited,unlimited,error");
+                for (limited, unlimited, reldif) in samples {
+                    println!("{},{},{}", limited, unlimited, reldif);
+                }
+                println!("------");
+                TestResult::failed()
+            } else {
+                println!(
+                    "Amplitude accuracy was above quality threshold ({} <= {} eps)",
+                    max_error, AMPLITUDE_ERROR_THRESHOLD
+                );
+                TestResult::passed()
             }
-            TestResult::passed()
         }))
     }
 

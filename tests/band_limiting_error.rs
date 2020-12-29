@@ -233,7 +233,10 @@ const PHASE_RANGE: Range<AudioPhase> = 0.0..AudioPhaseMod::consts::TAU;
 const ERROR_INTEGRATION_RANGE: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
 
 /// Number of bits of error from an unlimited signal to its limited equivalent
-type ErrorBits = u32;
+type ErrorBits = u8;
+
+/// Error integration data point
+type ErrorDataPoint = (AudioPhase, ErrorBits);
 
 /// Measure how the reference saw differs from the band-unlimited saw
 ///
@@ -244,7 +247,7 @@ fn measure_error(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
     initial_phase: AudioPhase,
-) -> (AudioPhase, ErrorBits) {
+) -> ErrorDataPoint {
     let oscillator = ReferenceSaw::new(sampling_rate, oscillator_freq, initial_phase);
     let osc_phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
     debug!(
@@ -262,8 +265,8 @@ fn measure_error(
         let correct_bits = (-(difference.abs().log2()))
             .floor()
             .max(0.0)
-            .min(u32::MAX as AudioSample) as u32;
-        let error_bits = AudioSample::MANTISSA_DIGITS.saturating_sub(correct_bits);
+            .min(u8::MAX as AudioSample) as u8;
+        let error_bits = (AudioSample::MANTISSA_DIGITS as u8).saturating_sub(correct_bits);
         integrated_error_bits = integrated_error_bits.max(error_bits);
         trace!(
             "{},{},{},{},{},{}",
@@ -315,7 +318,7 @@ struct ErrorDomainIntegrator {
     /// There should always be at least one phase data point within an error
     /// domain. If a domain falls to zero phases, it should be destroyed.
     ///
-    phases: VecDeque<AudioPhase>,
+    phases: VecDeque<ErrorDataPoint>,
 }
 //
 struct ErrorDomain {
@@ -363,7 +366,10 @@ impl ErrorLandscapeIntegrator {
     ///
     /// Tell whether error domains were created or destroyed in this process, or
     /// the boundary of existing error domains was simply moved around.
-    fn integrate(&mut self, (average_phase, error): (AudioPhase, ErrorBits)) -> bool {
+    fn integrate(&mut self, data_point: ErrorDataPoint) -> bool {
+        // Separate the components of the error measurement
+        let (average_phase, error) = data_point;
+
         // Handle a measurement that falls within an existing error domain
         let integrate_into = |integrators: &mut Vec<ErrorDomainIntegrator>, domain_idx| {
             let domain_integrator: &mut ErrorDomainIntegrator = &mut integrators[domain_idx];
@@ -371,10 +377,16 @@ impl ErrorLandscapeIntegrator {
             match domain_error.cmp(&error) {
                 // Same error: Just insert the data point there
                 Ordering::Equal => {
-                    domain_integrator.insert_phase(average_phase);
+                    domain_integrator.insert_data(data_point);
                     false
                 }
 
+                // FIXME: Find out how to avoid high-error domain gradually
+                //        absorbing all data through percolation. I think
+                //        keeping track of the actual error within each data
+                //        point of a domain is key, which is why I now record
+                //        this info, but algorithm must also change to use that.
+                //
                 // Domain has more error than input data point and would tend to
                 // absorb said input, but will only do so if it contains a close
                 // enough phase. Otherwise, the domain will be split and a new
@@ -410,6 +422,12 @@ impl ErrorLandscapeIntegrator {
                     todo!()
                 }
 
+                // FIXME: Find out how to avoid high-error domain gradually
+                //        absorbing all data through percolation. I think
+                //        keeping track of the actual error within each data
+                //        point of a domain is key, which is why I now record
+                //        this info, but algorithm must also change to use that.
+                //
                 // Domain has less error than input data point and all of its
                 // data points that lie close to the input phase will be
                 // absorbed by a new domain created for the input data point.
@@ -447,7 +465,10 @@ impl ErrorLandscapeIntegrator {
             }
         }) {
             // Input phase lies inside of an existing error domain
-            Ok(idx) => integrate_into(&mut self.domain_integrators, idx),
+            Ok(idx) => {
+                trace!("Integrating into existing error domain {}", idx);
+                integrate_into(&mut self.domain_integrators, idx)
+            }
 
             // The phase lies outside existing error domains
             Err(idx) => {
@@ -478,7 +499,7 @@ impl ErrorLandscapeIntegrator {
                             idx,
                             ErrorDomainIntegrator {
                                 error,
-                                phases: std::iter::once(average_phase).collect(),
+                                phases: std::iter::once(data_point).collect(),
                             },
                         );
                         true
@@ -491,6 +512,12 @@ impl ErrorLandscapeIntegrator {
 
                     // Phase belongs to two domains at idx-1 and idx, must arbitrate
                     (true, true) => {
+                        // FIXME: Find out how to avoid high-error domain gradually
+                        //        absorbing all data through percolation. I think
+                        //        keeping track of the actual error within each data
+                        //        point of a domain is key, which is why I now record
+                        //        this info, but algorithm must also change to use that.
+                        //
                         // TODO: By construction, this can only happen when the
                         //       phase lies inbetween two domains, which should
                         //       simplify matters. However, we can still "build
@@ -511,34 +538,40 @@ impl ErrorDomainIntegrator {
     /// Extract the current domain statistics for this domain
     fn domain(&self) -> ErrorDomain {
         ErrorDomain {
-            start: *self.phases.front().unwrap(),
+            start: self.phases.front().unwrap().0,
             error: self.error,
-            end: *self.phases.back().unwrap(),
+            end: self.phases.back().unwrap().0,
         }
     }
 
     /// Search function for finding a certain phase in an error
     // domain through binary search, with or without a tolerance
     fn search_phase(&mut self, phase: AudioPhase, with_tolerance: bool) -> Result<usize, usize> {
-        self.phases.make_contiguous().binary_search_by(|&probe| {
-            let tolerance = (with_tolerance as u8 as AudioPhase) * ERROR_INTEGRATION_RANGE;
-            if probe > phase + tolerance {
-                Ordering::Greater
-            } else if probe < phase - tolerance {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
-        })
+        self.phases
+            .make_contiguous()
+            .binary_search_by(|&(probed_phase, _probed_error)| {
+                let tolerance = (with_tolerance as u8 as AudioPhase) * ERROR_INTEGRATION_RANGE;
+                if probed_phase > phase + tolerance {
+                    Ordering::Greater
+                } else if probed_phase < phase - tolerance {
+                    Ordering::Less
+                } else {
+                    Ordering::Equal
+                }
+            })
     }
 
-    // Insert a phse at the right position within an error domain
-    fn insert_phase(&mut self, phase: AudioPhase) {
-        if let Err(pos) = self.search_phase(phase, false) {
-            trace!("Phase wasn't previously probed, record it");
-            self.phases.insert(pos, phase);
-        } else {
-            trace!("Phase was already probed before");
+    // Insert a data point at the right position within an error domain
+    fn insert_data(&mut self, data_point: ErrorDataPoint) {
+        match self.search_phase(data_point.0, false) {
+            Err(pos) => {
+                trace!("Phase wasn't previously probed, record it");
+                self.phases.insert(pos, data_point);
+            }
+            Ok(pos) => {
+                trace!("Phase was already probed before");
+                debug_assert_eq!(self.phases[pos], data_point);
+            }
         }
     }
 }

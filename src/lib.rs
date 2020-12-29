@@ -4,18 +4,33 @@ mod synthesis;
 #[cfg(test)]
 pub(crate) mod test_tools;
 
-use crate::{
-    phase::{AudioPhase, OscillatorPhase},
-    synthesis::HarmonicsCounter,
-};
+use crate::synthesis::HarmonicsCounter;
 
 pub use crate::{
     audio::{AudioFrequency, AudioSample, SamplingRateHz, MIN_SAMPLING_RATE},
-    phase::min_oscillator_freq,
+    phase::{min_oscillator_freq, AudioPhase, AudioPhaseMod},
     synthesis::Oscillator,
 };
 
+#[cfg(not(test))]
+pub use crate::phase::OscillatorPhase;
+#[cfg(test)]
+pub use crate::phase::OscillatorPhase;
+
 // === SAW GENERATORS ===
+
+/// Sawtooth wave without band limiting
+///
+/// It is not correct to directly sample this ideal wave, in the sense that
+/// sending a regularly sampled version of this wave through the digital-analog
+/// converter of a sound card will result in spectral aliasing artifacts.
+///
+/// However, this waveform can be used for validation purposes, that's what the
+/// band_limiting_error integration test does.
+pub fn unlimited_saw(phase: AudioPhase) -> AudioSample {
+    use AudioPhaseMod::consts::{PI, TAU};
+    (phase + PI).rem_euclid(TAU) / PI - 1.0
+}
 
 // This computes a band-limited sawtooth wave with maximal precision, at the
 // cost of speed. It is intended as a speed and precision reference against
@@ -91,14 +106,7 @@ impl Iterator for ReferenceSaw {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phase::AudioPhaseMod;
     use synthesis::test_tools::test_oscillator;
-
-    /// Continuous saw signal without band limiting
-    fn unlimited_saw(phase: AudioPhase) -> AudioSample {
-        use AudioPhaseMod::consts::{PI, TAU};
-        (phase + PI).rem_euclid(TAU) / PI - 1.0
-    }
 
     /// Test that our reference band-limited saw matches its continuous cousin
     /// that did not receive any band limiting.

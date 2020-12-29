@@ -214,7 +214,7 @@ use std::{
     ops::{Range, RangeInclusive},
 };
 
-/// Sampled region of the oscillator configuration space
+// Sampled region of the oscillator configuration space
 const SAMPLING_RATE_RANGE: RangeInclusive<SamplingRateHz> =
     44100..=(1 << AudioFrequency::MANTISSA_DIGITS);
 const OSCILLATOR_FREQ_RANGE: RangeInclusive<AudioFrequency> = 20.0..=20000.0;
@@ -232,16 +232,19 @@ const PHASE_RANGE: Range<AudioPhase> = 0.0..AudioPhaseMod::consts::TAU;
 ///
 const ERROR_INTEGRATION_RANGE: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
 
+/// Number of bits of error from an unlimited signal to its limited equivalent
+type ErrorBits = u32;
+
 /// Measure how the reference saw differs from the band-unlimited saw
 ///
 /// Returns the central phase around which the error was measured, and the
-/// number of bits that differ as an error figure of merit.
+/// number of bits that differ as a coarse figure of merit of the error.
 ///
 fn measure_error(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
     initial_phase: AudioPhase,
-) -> (AudioPhase, u32) {
+) -> (AudioPhase, ErrorBits) {
     let oscillator = ReferenceSaw::new(sampling_rate, oscillator_freq, initial_phase);
     let osc_phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
     debug!(
@@ -286,6 +289,260 @@ fn measure_error(
     (average_phase, integrated_error_bits)
 }
 
+/// From these error measurements, we integrate an increasingly accurate model
+/// of the error landscape of the function.
+///
+/// To enable reasonably fast convergence, this model is limited to a spatial
+/// resolution of ERROR_INTEGRATION_RANGE. Concretely, if an error data point
+/// has a neighbour with that range which has a higher error, it is considered
+/// to have that error as well.
+///
+/// This leads to the iterative formation and stabilization of "error domains"
+/// which are pessimistically considered to have constant integration error.
+///
+// TODO: Spell out the full list of invariants and test them in debug mode
+struct ErrorLandscapeIntegrator {
+    /// List of error domains, ordered by min/max phase
+    domain_integrators: Vec<ErrorDomainIntegrator>,
+}
+//
+struct ErrorDomainIntegrator {
+    /// Upper bound on the number of bits of error within that domain
+    error: ErrorBits,
+
+    /// Ordered list of phases that were associated to that error domain
+    ///
+    /// There should always be at least one phase data point within an error
+    /// domain. If a domain falls to zero phases, it should be destroyed.
+    ///
+    phases: VecDeque<AudioPhase>,
+}
+//
+struct ErrorDomain {
+    /// Phase at which the domain starts
+    start: AudioPhase,
+
+    /// Number of bits of error within that domain
+    error: ErrorBits,
+
+    /// Phase at which the domain ends
+    end: AudioPhase,
+}
+//
+impl ErrorLandscapeIntegrator {
+    /// Prepare to integrate the error landscape
+    fn new() -> Self {
+        Self {
+            domain_integrators: Vec::new(),
+        }
+    }
+
+    /// Query how many domains are present in the current error landscape
+    fn num_domains(&self) -> usize {
+        self.domain_integrators.len()
+    }
+
+    /// Query a domain within the current error landscape
+    fn domain(&self, index: usize) -> ErrorDomain {
+        self.domain_integrators[index].domain()
+    }
+
+    /// Query the current error domain landscape
+    ///
+    /// This iterator returns a list of domain, where for each domain, we get
+    /// the phase at which the domain starts, the number of error bits within
+    /// that error domain, and the phase at which the domain ends.
+    ///
+    fn domains(&self) -> impl Iterator<Item = ErrorDomain> + '_ {
+        self.domain_integrators
+            .iter()
+            .map(ErrorDomainIntegrator::domain)
+    }
+
+    /// Update the error landscape with a new measurement
+    ///
+    /// Tell whether error domains were created or destroyed in this process, or
+    /// the boundary of existing error domains was simply moved around.
+    fn integrate(&mut self, (average_phase, error): (AudioPhase, ErrorBits)) -> bool {
+        // Handle a measurement that falls within an existing error domain
+        let integrate_into = |integrators: &mut Vec<ErrorDomainIntegrator>, domain_idx| {
+            let domain_integrator: &mut ErrorDomainIntegrator = &mut integrators[domain_idx];
+            let domain_error = domain_integrator.error;
+            match domain_error.cmp(&error) {
+                // Same error: Just insert the data point there
+                Ordering::Equal => {
+                    domain_integrator.insert_phase(average_phase);
+                    false
+                }
+
+                // Domain has more error than input data point and would tend to
+                // absorb said input, but will only do so if it contains a close
+                // enough phase. Otherwise, the domain will be split and a new
+                // phase domain will be inserted in the middle.
+                Ordering::Greater => {
+                    /* trace!("Candidate has more error bits, will it absorb us?");
+                    match search_phase(candidate, average_phase, true) {
+                        Ok(_approx_pos) => {
+                            trace!("Yes, it will absorb us");
+                            insert_phase(candidate)
+                        }
+                        Err(_approx_splitting_point) => {
+                            trace!("No, we split it and insert ourselves in the middle");
+                            // FIXME: Handle case where splitting point is zero
+                            let right_candidate_phases =
+                                candidate.phases.split_off(splitting_point);
+                            error_domains.insert(
+                                match_idx + 1,
+                                ErrorDomain {
+                                    phases: std::iter::once(average_phase).collect(),
+                                    error_bits: error_bits,
+                                },
+                            );
+                            error_domains.insert(
+                                match_idx + 2,
+                                ErrorDomain {
+                                    phases: right_candidate_phases,
+                                    error_bits: error_bits,
+                                },
+                            );
+                        }
+                    } */
+                    todo!()
+                }
+
+                // Domain has less error than input data point and all of its
+                // data points that lie close to the input phase will be
+                // absorbed by a new domain created for the input data point.
+                Ordering::Less => {
+                    /*
+                    trace!("Candidate has less error bits, create new domain and absorb its closest phases");
+                    let left_splitting_point = search_phase(
+                        candidate,
+                        average_phase - ERROR_INTEGRATION_RANGE,
+                        false,
+                    )
+                    .unwrap_or_else(|pos| pos);
+                    // TODO: Split candidate in three parts:
+                    // - Phases that are far below us (left_candidate_phases)
+                    // - Phases that are close to us (close_candidate_phases)
+                    // - Phases that are far above us (right_candidate_phases)
+                    // If left_candidate_phases is not empty, it stays where the candidate
+                    // was. Then we insert a domain with our phase, close_candidate_phases,
+                    // and our integrated error bits. Finally, we insert a domain with
+                    // left_candidate_phases and candidate_error_bits.*/
+                    todo!()
+                }
+            }
+        };
+
+        // Find if input phase falls inside a domain or between two domains
+        match self.domain_integrators.binary_search_by(|probe| {
+            let domain = probe.domain();
+            if domain.start > average_phase {
+                Ordering::Greater
+            } else if domain.end < average_phase {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        }) {
+            // Input phase lies inside of an existing error domain
+            Ok(idx) => integrate_into(&mut self.domain_integrators, idx),
+
+            // The phase lies outside existing error domains
+            Err(idx) => {
+                // Check if neighboring domains are within integration range or
+                // have the same error value, which means that the active
+                // measurement will interact with them.
+                let left_border = if idx > 0 {
+                    let left_domain = self.domain(idx - 1);
+                    average_phase - ERROR_INTEGRATION_RANGE <= left_domain.end
+                        || left_domain.error == error
+                } else {
+                    false
+                };
+                let right_border = if idx < self.num_domains() {
+                    let right_domain = self.domain(idx);
+                    average_phase + ERROR_INTEGRATION_RANGE >= right_domain.end
+                        || right_domain.error == error
+                } else {
+                    false
+                };
+
+                // Deduce what action needs to be taken
+                match (left_border, right_border) {
+                    // Input measurement does not match any neighboring ones, so
+                    // we can create a new error domain just for it
+                    (false, false) => {
+                        self.domain_integrators.insert(
+                            idx,
+                            ErrorDomainIntegrator {
+                                error,
+                                phases: std::iter::once(average_phase).collect(),
+                            },
+                        );
+                        true
+                    }
+
+                    // Input measurement matches one neighboring domain and
+                    // effectively belongs to that domain as in the case above
+                    (true, false) => integrate_into(&mut self.domain_integrators, idx - 1),
+                    (false, true) => integrate_into(&mut self.domain_integrators, idx),
+
+                    // Phase belongs to two domains at idx-1 and idx, must arbitrate
+                    (true, true) => {
+                        // TODO: By construction, this can only happen when the
+                        //       phase lies inbetween two domains, which should
+                        //       simplify matters. However, we can still "build
+                        //       a bridge" between two domains, which means that
+                        //       the action that we need to take is more
+                        //       complicated than merging into the first domain,
+                        //       then the second domain.
+                        todo!()
+                    }
+                }
+            }
+        };
+        todo!("Finish this")
+    }
+}
+//
+impl ErrorDomainIntegrator {
+    /// Extract the current domain statistics for this domain
+    fn domain(&self) -> ErrorDomain {
+        ErrorDomain {
+            start: *self.phases.front().unwrap(),
+            error: self.error,
+            end: *self.phases.back().unwrap(),
+        }
+    }
+
+    /// Search function for finding a certain phase in an error
+    // domain through binary search, with or without a tolerance
+    fn search_phase(&mut self, phase: AudioPhase, with_tolerance: bool) -> Result<usize, usize> {
+        self.phases.make_contiguous().binary_search_by(|&probe| {
+            let tolerance = (with_tolerance as u8 as AudioPhase) * ERROR_INTEGRATION_RANGE;
+            if probe > phase + tolerance {
+                Ordering::Greater
+            } else if probe < phase - tolerance {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        })
+    }
+
+    // Insert a phse at the right position within an error domain
+    fn insert_phase(&mut self, phase: AudioPhase) {
+        if let Err(pos) = self.search_phase(phase, false) {
+            trace!("Phase wasn't previously probed, record it");
+            self.phases.insert(pos, phase);
+        } else {
+            trace!("Phase was already probed before");
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn reference_saw() {
@@ -303,185 +560,27 @@ fn reference_saw() {
         );
 
         // Map the error landscape at that relative frequency
-        type PhaseList = VecDeque<AudioPhase>;
-        #[derive(Debug)]
-        struct ErrorDomain {
-            phases: PhaseList,
-            error_bits: u32,
-        }
-        let mut error_domains = Vec::<ErrorDomain>::new();
+        let mut error_landscape = ErrorLandscapeIntegrator::new();
         loop {
             // Check error at random phases
             let initial_phase = rng.gen_range(PHASE_RANGE);
-            let (average_phase, error_bits) =
-                measure_error(sampling_rate, oscillator_freq, initial_phase);
+            let error_measurement = measure_error(sampling_rate, oscillator_freq, initial_phase);
 
-            // Build a map of "error domains" across the phase space
-            let prev_error_domains_len = error_domains.len();
-            trace!("Looking up a suitable error domain...");
-            // FIXME: If both the left and right domains match, we must select the one with more
-            //        errors, which means that binary search is not appropriate as it makes local
-            //        decisions without examining neighbors. We must thus reimplement it.
-            match error_domains.binary_search_by(|probe| {
-                if *probe.phases.front().unwrap() > average_phase + ERROR_INTEGRATION_RANGE {
-                    Ordering::Greater
-                } else if *probe.phases.back().unwrap() < average_phase - ERROR_INTEGRATION_RANGE {
-                    Ordering::Less
-                } else {
-                    Ordering::Equal
-                }
-            }) {
-                // Found an error domain which this phase could fall into
-                Ok(match_idx) => {
-                    // Set up some infrastructure for existing domain analysis
-                    trace!(
-                        "Found an error domain with matching phases at index {}",
-                        match_idx
-                    );
-                    let candidate = &mut error_domains[match_idx];
-                    let candidate_error_bits = candidate.error_bits;
-
-                    // Search function for finding a certain phase in an error
-                    // domain through binary search, with or without a tolerance
-                    fn search_phase(
-                        candidate: &mut ErrorDomain,
-                        phase: AudioPhase,
-                        with_tolerance: bool,
-                    ) -> Result<usize, usize> {
-                        candidate
-                            .phases
-                            .make_contiguous()
-                            .binary_search_by(|&probe| {
-                                let tolerance =
-                                    (with_tolerance as u8 as AudioPhase) * ERROR_INTEGRATION_RANGE;
-                                if probe > phase + tolerance {
-                                    Ordering::Greater
-                                } else if probe < phase - tolerance {
-                                    Ordering::Less
-                                } else {
-                                    Ordering::Equal
-                                }
-                            })
-                    }
-
-                    // Insert a phse at the right position within an error domain
-                    let insert_phase = |candidate: &mut ErrorDomain| {
-                        if let Err(pos) = search_phase(candidate, average_phase, false) {
-                            trace!("Phase wasn't previously probed, record it");
-                            candidate.phases.insert(pos, average_phase);
-                        } else {
-                            trace!("Phase was already probed before");
-                        }
-                    };
-
-                    // Is the existing domain more or less precise?
-                    match candidate_error_bits.cmp(&error_bits) {
-                        // It's less precise, and tends to absorb us
-                        Ordering::Greater => {
-                            trace!("Candidate has more error bits, will it absorb us?");
-                            match search_phase(candidate, average_phase, true) {
-                                Ok(_approx_pos) => {
-                                    trace!("Yes, it will absorb us");
-                                    insert_phase(candidate)
-                                }
-                                Err(_approx_splitting_point) => {
-                                    trace!("No, we split it and insert ourselves in the middle");
-                                    // FIXME: Handle case where splitting point is zero
-                                    let right_candidate_phases =
-                                        candidate.phases.split_off(splitting_point);
-                                    error_domains.insert(
-                                        match_idx + 1,
-                                        ErrorDomain {
-                                            phases: std::iter::once(average_phase).collect(),
-                                            error_bits: error_bits,
-                                        },
-                                    );
-                                    error_domains.insert(
-                                        match_idx + 2,
-                                        ErrorDomain {
-                                            phases: right_candidate_phases,
-                                            error_bits: error_bits,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-
-                        // It's as precise, we go there
-                        Ordering::Equal => {
-                            trace!("Number of error bit matches as well, inserting phase into it");
-                            insert_phase(candidate);
-                        }
-
-                        // It's more precise, we tend to absorb it
-                        Ordering::Less => {
-                            trace!("Candidate has less error bits, create new domain and absorb its closest phases");
-                            let left_splitting_point = search_phase(
-                                candidate,
-                                average_phase - ERROR_INTEGRATION_RANGE,
-                                false,
-                            )
-                            .unwrap_or_else(|pos| pos);
-                            // TODO: Split candidate in three parts:
-                            // - Phases that are far below us (left_candidate_phases)
-                            // - Phases that are close to us (close_candidate_phases)
-                            // - Phases that are far above us (right_candidate_phases)
-                            // If left_candidate_phases is not empty, it stays where the candidate
-                            // was. Then we insert a domain with our phase, close_candidate_phases,
-                            // and our integrated error bits. Finally, we insert a domain with
-                            // left_candidate_phases and candidate_error_bits.
-                            todo!()
-                        }
-                    }
-                }
-
-                // Did not find an error domain which this phase could fall into
-                Err(match_idx) => {
-                    trace!(
-                        "No matching domain, search for neighbours of insertion point {}",
-                        match_idx,
-                    );
-                    if match_idx > 0 && error_domains[match_idx - 1].error_bits == error_bits {
-                        trace!("Found a suitable neighbor on the left");
-                        error_domains[match_idx - 1].phases.push_back(average_phase);
-                    } else if match_idx < error_domains.len()
-                        && error_domains[match_idx].error_bits == error_bits
-                    {
-                        trace!("Found a suitable neighbor on the right");
-                        error_domains[match_idx].phases.push_front(average_phase);
-                    } else {
-                        trace!("No matching neighbor, will create new domain");
-                        error_domains.insert(
-                            match_idx,
-                            ErrorDomain {
-                                phases: std::iter::once(average_phase).collect(),
-                                error_bits: error_bits,
-                            },
-                        )
-                    }
-                }
-            }
-
-            // Display diagnostics as the error domain list grows
-            if error_domains.len() > prev_error_domains_len {
+            // Use these measurements to study the error landscape via a form
+            // of Monte Carlo integration
+            if error_landscape.integrate(error_measurement) {
                 debug!(
-                    "Created an error domain (current count: {})",
-                    error_domains.len()
+                    "Error landscape changed, there are now {} error domains",
+                    error_landscape.domains().count()
                 );
             }
 
             // TODO: Stop when error domain list converges. But currently, it
             //       doesn't converge. So I must first figure out why.
-            if error_domains.len() > 10000 {
+            if error_landscape.domains().count() > 10000 {
                 debug!("Index,StartPhase,EndPhase,ErrorBits");
-                for (idx, domain) in error_domains.iter().enumerate() {
-                    debug!(
-                        "{},{},{},{}",
-                        idx,
-                        domain.phases.front().unwrap(),
-                        domain.phases.back().unwrap(),
-                        domain.error_bits,
-                    );
+                for (idx, domain) in error_landscape.domains().enumerate() {
+                    debug!("{},{},{},{}", idx, domain.start, domain.end, domain.error,);
                 }
                 todo!()
             }

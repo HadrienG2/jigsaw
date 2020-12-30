@@ -109,26 +109,8 @@ impl OscillatorPhase {
         audio::validate_audio_frequency((sampling_rate, oscillator_freq));
         validate_audio_phase(initial_phase);
 
-        // Check that the oscillator frequency can be handled by our internal
-        // processing, if not adjust to the closest supported one.
-        //
-        // In case you're curious, the problem here is that self.sample_idx must
-        // be exactly convertible to the AudioPhase floating-point type, or else
-        // phases near the end of the oscillator's cycle will be inaccurate.
-        // When you do the math of checking what is the breakdown point, you end
-        // up on this minimal frequency criterion.
-        //
-        let sampling_rate = sampling_rate as AudioFrequency;
-        let mut relative_freq = oscillator_freq / sampling_rate;
-        let min_relative_freq = min_relative_freq();
-        if relative_freq != 0.0 && relative_freq.abs() < min_relative_freq {
-            warn!("Oscillator frequency cannot be honored exactly and will be rounded");
-            if relative_freq.abs() >= min_relative_freq / 2.0 {
-                relative_freq = relative_freq.signum() * min_relative_freq;
-            } else {
-                relative_freq = relative_freq.signum() * 0.0;
-            }
-        }
+        // Pick a relative operating frequency
+        let relative_freq = Self::relative_freq(sampling_rate, oscillator_freq);
 
         // Normalize phase offset to the [0; 2*pi] range for maximal accuracy.
         let phase_offset = initial_phase % AudioPhaseMod::consts::TAU;
@@ -203,6 +185,51 @@ impl OscillatorPhase {
             sample_idx: 0.0,
             sample_idx_cycle,
         }
+    }
+
+    /// Pick a relative operating frequency
+    fn relative_freq(
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+    ) -> AudioFrequency {
+        // Check that the input parameters make sense
+        audio::validate_sampling_rate(sampling_rate);
+        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
+
+        // Check that the oscillator frequency can be handled by our internal
+        // processing, if not adjust to the closest supported one.
+        //
+        // In case you're curious, the problem here is that self.sample_idx must
+        // be exactly convertible to the AudioPhase floating-point type, or else
+        // phases near the end of the oscillator's cycle will be inaccurate.
+        // When you do the math of checking what is the breakdown point, you end
+        // up on this minimal frequency criterion.
+        //
+        let sampling_rate = sampling_rate as AudioFrequency;
+        let mut relative_freq = oscillator_freq / sampling_rate;
+        let min_relative_freq = min_relative_freq();
+        if relative_freq != 0.0 && relative_freq.abs() < min_relative_freq {
+            warn!("Oscillator frequency cannot be honored exactly and will be rounded");
+            if relative_freq.abs() >= min_relative_freq / 2.0 {
+                relative_freq = relative_freq.signum() * min_relative_freq;
+            } else {
+                relative_freq = relative_freq.signum() * 0.0;
+            }
+        }
+        relative_freq
+    }
+
+    /// Tell what the phase increment is
+    pub fn phase_increment(
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+    ) -> AudioPhase {
+        // Check that the input parameters make sense
+        audio::validate_sampling_rate(sampling_rate);
+        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
+
+        // Compute the phase increment
+        AudioPhaseMod::consts::TAU * Self::relative_freq(sampling_rate, oscillator_freq)
     }
 }
 

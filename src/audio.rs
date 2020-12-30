@@ -15,7 +15,7 @@ pub(crate) type NonZeroSamplingRate = core::num::NonZeroU32;
 /// Minimal sampling rate that this crate is tested against
 //
 // This limit is introduced because writing code that remains numerically stable
-// at very low sampling rates is harder, and the usefulness of doing this is
+// at very low sampling rates is hard, and the usefulness of doing this is
 // debatable when hardware support for sampling rates lower than 44.1 kHz is
 // very sparse in modern audio chips.
 //
@@ -23,11 +23,10 @@ pub const MIN_SAMPLING_RATE: SamplingRateHz = 44100;
 
 /// Maximal sampling rate that this crate can accurately manipulate
 //
-// TODO: Constify once Rust supports it
+// This limit comes from the fact the sampling rates are converted to our
+// AudioFrequency type as part of the relative frequency computation.
 //
-pub fn max_sampling_rate() -> SamplingRateHz {
-    (2 as SamplingRateHz).pow(AudioFrequency::MANTISSA_DIGITS)
-}
+pub const MAX_SAMPLING_RATE: SamplingRateHz = 1 << AudioFrequency::MANTISSA_DIGITS;
 
 /// Validate a user-provided sampling rate
 ///
@@ -40,7 +39,7 @@ pub(crate) fn validate_sampling_rate(rate: SamplingRateHz) -> bool {
     if rate < MIN_SAMPLING_RATE {
         is_ideal = false;
         warn!("This crate is neither designed nor tested for such low sampling rates");
-    } else if rate > max_sampling_rate() {
+    } else if rate > MAX_SAMPLING_RATE {
         is_ideal = false;
         warn!("This sampling rate cannot be honored exactly and will be rounded off");
     }

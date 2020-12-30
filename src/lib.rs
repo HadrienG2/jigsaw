@@ -7,8 +7,8 @@ pub(crate) mod test_tools;
 use crate::synthesis::HarmonicsCounter;
 
 pub use crate::{
-    audio::{AudioFrequency, AudioSample, SamplingRateHz, MIN_SAMPLING_RATE},
-    phase::{min_oscillator_freq, AudioPhase, AudioPhaseMod},
+    audio::{AudioFrequency, AudioSample, SamplingRateHz, MAX_SAMPLING_RATE, MIN_SAMPLING_RATE},
+    phase::{min_oscillator_freq, min_relative_freq, AudioPhase, AudioPhaseMod},
     synthesis::Oscillator,
 };
 

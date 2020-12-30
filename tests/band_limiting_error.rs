@@ -206,60 +206,64 @@ use jigsaw::{
     unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, Oscillator,
     OscillatorPhase, ReferenceSaw, SamplingRateHz,
 };
-use log::{debug, info, trace};
+use log::{debug, trace};
 use rand::Rng;
-use std::{
-    cmp::Ordering,
-    collections::VecDeque,
-    ops::{Range, RangeInclusive},
-};
+use std::ops::{Range, RangeInclusive};
 
 // Sampled region of the oscillator configuration space
-const SAMPLING_RATE_RANGE: RangeInclusive<SamplingRateHz> =
-    44100..=(1 << AudioFrequency::MANTISSA_DIGITS);
+const SAMPLING_RATE_RANGE: RangeInclusive<SamplingRateHz> = 44_100..=192_000;
 const OSCILLATOR_FREQ_RANGE: RangeInclusive<AudioFrequency> = 20.0..=20000.0;
 const PHASE_RANGE: Range<AudioPhase> = 0.0..AudioPhaseMod::consts::TAU;
 
-/// Phase range over which error should be integrated
-///
-/// An ideal Monte Carlo sampler only takes one sample, but there are several
-/// benefits to taking more of them per considered oscillator phases:
-///
-/// - It amortizes the overhead of constructing an oscillator, and allows
-///   runtime performance optimizations like vectorization to kick in.
-/// - It produces a smoothed out error domain landscape that will converge
-///   faster and use less RAM, but may still provide enough information.
-///
-const ERROR_INTEGRATION_RANGE: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
+// Relative frequency range
+fn relative_freq_range() -> RangeInclusive<AudioFrequency> {
+    let start = OSCILLATOR_FREQ_RANGE.start() / (*SAMPLING_RATE_RANGE.end() as AudioFrequency);
+    let end = OSCILLATOR_FREQ_RANGE.end() / (*SAMPLING_RATE_RANGE.start() as AudioFrequency);
+    start..=end
+}
 
-/// Number of bits of error from an unlimited signal to its limited equivalent
+/// Desired phase resolution of the error landscape
+const ERROR_PHASE_RESOLUTION: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
+
+/// Desired relative frequency resolution of the error landscape
+fn relative_freq_resolution() -> AudioFrequency {
+    let range = relative_freq_range();
+    (range.end() - range.start()) / 1000.0
+}
+
+/// Number of bits of error from an unlimited signal to its band-limited cousin
 type ErrorBits = u8;
 
 /// Error integration data point
 type ErrorDataPoint = (AudioPhase, ErrorBits);
 
-/// Measure how the reference saw differs from the band-unlimited saw
+/// Measure how the reference saw differs from the band-unlimited saw in a range
+/// of ERROR_INTEGRATION_RANGE around a certain phase.
 ///
-/// Returns the central phase around which the error was measured, and the
-/// number of bits that differ as a coarse figure of merit of the error.
+/// Returns the actual central phase around which the error was measured (which
+/// will be a bit lower than the requested one due to phase sampling
+/// shenanigans), and the number of bits that differ.
 ///
 fn measure_error(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
-    initial_phase: AudioPhase,
-) -> ErrorDataPoint {
+    phase: AudioPhase,
+) -> ErrorBits {
+    trace!(
+        "Probing error at phase {} (= {}pi)",
+        phase,
+        phase / AudioPhaseMod::consts::PI
+    );
+    let phase_increment = OscillatorPhase::phase_increment(sampling_rate, oscillator_freq);
+    let initial_phase = phase - ERROR_PHASE_RESOLUTION / 2.0;
     let oscillator = ReferenceSaw::new(sampling_rate, oscillator_freq, initial_phase);
     let osc_phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
-    debug!(
-        "Probing error at phase {} (= {}pi)",
-        initial_phase,
-        initial_phase / AudioPhaseMod::consts::PI
-    );
     let mut integrated_error_bits = 0;
-    let mut final_phase = 0.0;
     trace!("Phase,BandLimited,TrueSaw,Difference,ErrorBits,IntegratedErrorBits");
-    for (phase, limited) in osc_phase.zip(oscillator) {
-        use AudioPhaseMod::consts::TAU;
+    for (phase, limited) in osc_phase
+        .zip(oscillator)
+        .take(1 + (ERROR_PHASE_RESOLUTION / phase_increment).trunc() as usize)
+    {
         let unlimited = unlimited_saw(phase);
         let difference = limited - unlimited;
         let correct_bits = (-(difference.abs().log2()))
@@ -277,303 +281,55 @@ fn measure_error(
             error_bits,
             integrated_error_bits
         );
-        if (phase - initial_phase).rem_euclid(TAU) >= ERROR_INTEGRATION_RANGE {
-            final_phase = phase.rem_euclid(TAU);
-            break;
-        }
     }
-    let average_phase = (initial_phase + final_phase) / 2.0;
-    debug!(
-        "Went up to phase {} (= {}pi), found error of {} bits",
-        final_phase,
-        final_phase / AudioPhaseMod::consts::PI,
-        integrated_error_bits
-    );
-    (average_phase, integrated_error_bits)
+    trace!("Found an error of {} bits", integrated_error_bits);
+    integrated_error_bits
 }
 
-/// From these error measurements, we integrate an increasingly accurate model
-/// of the error landscape of the function.
+/// Integrate data from measure_error() in order to iteratively approximate the
+/// error landcape of our sawtooth generator in a given
+/// (sampling rate, oscillator frequency) configuration.
 ///
-/// To enable reasonably fast convergence, this model is limited to a spatial
-/// resolution of ERROR_INTEGRATION_RANGE. Concretely, if an error data point
-/// has a neighbour with that range which has a higher error, it is considered
-/// to have that error as well.
+/// We could exhaustively explore all floating-point phases from 0 to 2pi, but
+/// this would take us 2.pow(AudioPhase::MANTISSA_DIGITS) sawtooh wave
+/// computations per (sampling rate, sawtooth frequency) data points, which is
+/// too expensive to be practical. So we want a "good enough" approximation.
 ///
-/// This leads to the iterative formation and stabilization of "error domains"
-/// which are pessimistically considered to have constant integration error.
+/// Our criterion for a "good enough" approximation is that the spatial
+/// resolution of our error measurements is good enough. Concretely, they should
+/// be spaced by no more than ERROR_INTEGRATION_RANGE.
 ///
-// TODO: Spell out the full list of invariants and test them in debug mode
-struct ErrorLandscapeIntegrator {
-    /// List of error domains, ordered by min/max phase
-    domain_integrators: Vec<ErrorDomainIntegrator>,
-}
-//
-struct ErrorDomainIntegrator {
-    /// Upper bound on the number of bits of error within that domain
-    error: ErrorBits,
-
-    /// Ordered list of phases that were associated to that error domain
-    ///
-    /// There should always be at least one phase data point within an error
-    /// domain. If a domain falls to zero phases, it should be destroyed.
-    ///
-    phases: VecDeque<ErrorDataPoint>,
-}
-//
-struct ErrorDomain {
-    /// Phase at which the domain starts
-    start: AudioPhase,
-
-    /// Number of bits of error within that domain
-    error: ErrorBits,
-
-    /// Phase at which the domain ends
-    end: AudioPhase,
-}
-//
-impl ErrorLandscapeIntegrator {
-    /// Prepare to integrate the error landscape
-    fn new() -> Self {
-        Self {
-            domain_integrators: Vec::new(),
-        }
+/// But we should not space them by exactly ERROR_INTEGRATION_RANGE, because
+/// this regular sampling could lead us to miss important information. For
+/// example, if there is an error oscillation every ERROR_INTEGRATION_RANGE, we
+/// would not see it at all, not even a trace of it, when using regular
+/// sampling. Whereas with irregular sampling, we would see some kind of noise
+/// in the output error(phase) curve, which would tell us that
+/// ERROR_INTEGRATION_RANGE is too high and must be reduced.
+///
+/// To resolve this problem, we separate error measurements by a random number
+/// from the phase epsilon to ERROR_INTEGRATION_RANGE. This borrows from the
+/// Monte Carlo integration approach, in the sense that across infinitely many
+/// runs of this test suite, we will actually have explored the entire space of
+/// all possible audio phases between 0 and 2pi.
+///
+fn measure_error_vs_phase(
+    sampling_rate: SamplingRateHz,
+    oscillator_freq: AudioFrequency,
+) -> Vec<ErrorDataPoint> {
+    let mut rng = rand::thread_rng();
+    let mut phase = PHASE_RANGE.start;
+    let approx_num_points = (2.0 * AudioPhaseMod::consts::TAU / ERROR_PHASE_RESOLUTION) as usize;
+    let mut result = Vec::with_capacity(approx_num_points);
+    while phase <= PHASE_RANGE.end {
+        result.push((phase, measure_error(sampling_rate, oscillator_freq, phase)));
+        phase = rng.gen_range(phase..phase + ERROR_PHASE_RESOLUTION);
     }
-
-    /// Query how many domains are present in the current error landscape
-    fn num_domains(&self) -> usize {
-        self.domain_integrators.len()
-    }
-
-    /// Query a domain within the current error landscape
-    fn domain(&self, index: usize) -> ErrorDomain {
-        self.domain_integrators[index].domain()
-    }
-
-    /// Query the current error domain landscape
-    ///
-    /// This iterator returns a list of domain, where for each domain, we get
-    /// the phase at which the domain starts, the number of error bits within
-    /// that error domain, and the phase at which the domain ends.
-    ///
-    fn domains(&self) -> impl Iterator<Item = ErrorDomain> + '_ {
-        self.domain_integrators
-            .iter()
-            .map(ErrorDomainIntegrator::domain)
-    }
-
-    /// Update the error landscape with a new measurement
-    ///
-    /// Tell whether error domains were created or destroyed in this process, or
-    /// the boundary of existing error domains was simply moved around.
-    fn integrate(&mut self, data_point: ErrorDataPoint) -> bool {
-        // Separate the components of the error measurement
-        let (average_phase, error) = data_point;
-
-        // Handle a measurement that falls within an existing error domain
-        let integrate_into = |integrators: &mut Vec<ErrorDomainIntegrator>, domain_idx| {
-            let domain_integrator: &mut ErrorDomainIntegrator = &mut integrators[domain_idx];
-            let domain_error = domain_integrator.error;
-            match domain_error.cmp(&error) {
-                // Same error: Just insert the data point there
-                Ordering::Equal => {
-                    domain_integrator.insert_data(data_point);
-                    false
-                }
-
-                // FIXME: Find out how to avoid high-error domain gradually
-                //        absorbing all data through percolation. I think
-                //        keeping track of the actual error within each data
-                //        point of a domain is key, which is why I now record
-                //        this info, but algorithm must also change to use that.
-                //
-                // Domain has more error than input data point and would tend to
-                // absorb said input, but will only do so if it contains a close
-                // enough phase. Otherwise, the domain will be split and a new
-                // phase domain will be inserted in the middle.
-                Ordering::Greater => {
-                    /* trace!("Candidate has more error bits, will it absorb us?");
-                    match search_phase(candidate, average_phase, true) {
-                        Ok(_approx_pos) => {
-                            trace!("Yes, it will absorb us");
-                            insert_phase(candidate)
-                        }
-                        Err(_approx_splitting_point) => {
-                            trace!("No, we split it and insert ourselves in the middle");
-                            // FIXME: Handle case where splitting point is zero
-                            let right_candidate_phases =
-                                candidate.phases.split_off(splitting_point);
-                            error_domains.insert(
-                                match_idx + 1,
-                                ErrorDomain {
-                                    phases: std::iter::once(average_phase).collect(),
-                                    error_bits: error_bits,
-                                },
-                            );
-                            error_domains.insert(
-                                match_idx + 2,
-                                ErrorDomain {
-                                    phases: right_candidate_phases,
-                                    error_bits: error_bits,
-                                },
-                            );
-                        }
-                    } */
-                    todo!()
-                }
-
-                // FIXME: Find out how to avoid high-error domain gradually
-                //        absorbing all data through percolation. I think
-                //        keeping track of the actual error within each data
-                //        point of a domain is key, which is why I now record
-                //        this info, but algorithm must also change to use that.
-                //
-                // Domain has less error than input data point and all of its
-                // data points that lie close to the input phase will be
-                // absorbed by a new domain created for the input data point.
-                Ordering::Less => {
-                    /*
-                    trace!("Candidate has less error bits, create new domain and absorb its closest phases");
-                    let left_splitting_point = search_phase(
-                        candidate,
-                        average_phase - ERROR_INTEGRATION_RANGE,
-                        false,
-                    )
-                    .unwrap_or_else(|pos| pos);
-                    // TODO: Split candidate in three parts:
-                    // - Phases that are far below us (left_candidate_phases)
-                    // - Phases that are close to us (close_candidate_phases)
-                    // - Phases that are far above us (right_candidate_phases)
-                    // If left_candidate_phases is not empty, it stays where the candidate
-                    // was. Then we insert a domain with our phase, close_candidate_phases,
-                    // and our integrated error bits. Finally, we insert a domain with
-                    // left_candidate_phases and candidate_error_bits.*/
-                    todo!()
-                }
-            }
-        };
-
-        // Find if input phase falls inside a domain or between two domains
-        match self.domain_integrators.binary_search_by(|probe| {
-            let domain = probe.domain();
-            if domain.start > average_phase {
-                Ordering::Greater
-            } else if domain.end < average_phase {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
-        }) {
-            // Input phase lies inside of an existing error domain
-            Ok(idx) => {
-                trace!("Integrating into existing error domain {}", idx);
-                integrate_into(&mut self.domain_integrators, idx)
-            }
-
-            // The phase lies outside existing error domains
-            Err(idx) => {
-                // Check if neighboring domains are within integration range or
-                // have the same error value, which means that the active
-                // measurement will interact with them.
-                let left_border = if idx > 0 {
-                    let left_domain = self.domain(idx - 1);
-                    average_phase - ERROR_INTEGRATION_RANGE <= left_domain.end
-                        || left_domain.error == error
-                } else {
-                    false
-                };
-                let right_border = if idx < self.num_domains() {
-                    let right_domain = self.domain(idx);
-                    average_phase + ERROR_INTEGRATION_RANGE >= right_domain.end
-                        || right_domain.error == error
-                } else {
-                    false
-                };
-
-                // Deduce what action needs to be taken
-                match (left_border, right_border) {
-                    // Input measurement does not match any neighboring ones, so
-                    // we can create a new error domain just for it
-                    (false, false) => {
-                        self.domain_integrators.insert(
-                            idx,
-                            ErrorDomainIntegrator {
-                                error,
-                                phases: std::iter::once(data_point).collect(),
-                            },
-                        );
-                        true
-                    }
-
-                    // Input measurement matches one neighboring domain and
-                    // effectively belongs to that domain as in the case above
-                    (true, false) => integrate_into(&mut self.domain_integrators, idx - 1),
-                    (false, true) => integrate_into(&mut self.domain_integrators, idx),
-
-                    // Phase belongs to two domains at idx-1 and idx, must arbitrate
-                    (true, true) => {
-                        // FIXME: Find out how to avoid high-error domain gradually
-                        //        absorbing all data through percolation. I think
-                        //        keeping track of the actual error within each data
-                        //        point of a domain is key, which is why I now record
-                        //        this info, but algorithm must also change to use that.
-                        //
-                        // TODO: By construction, this can only happen when the
-                        //       phase lies inbetween two domains, which should
-                        //       simplify matters. However, we can still "build
-                        //       a bridge" between two domains, which means that
-                        //       the action that we need to take is more
-                        //       complicated than merging into the first domain,
-                        //       then the second domain.
-                        todo!()
-                    }
-                }
-            }
-        };
-        todo!("Finish this")
-    }
-}
-//
-impl ErrorDomainIntegrator {
-    /// Extract the current domain statistics for this domain
-    fn domain(&self) -> ErrorDomain {
-        ErrorDomain {
-            start: self.phases.front().unwrap().0,
-            error: self.error,
-            end: self.phases.back().unwrap().0,
-        }
-    }
-
-    /// Search function for finding a certain phase in an error
-    // domain through binary search, with or without a tolerance
-    fn search_phase(&mut self, phase: AudioPhase, with_tolerance: bool) -> Result<usize, usize> {
-        self.phases
-            .make_contiguous()
-            .binary_search_by(|&(probed_phase, _probed_error)| {
-                let tolerance = (with_tolerance as u8 as AudioPhase) * ERROR_INTEGRATION_RANGE;
-                if probed_phase > phase + tolerance {
-                    Ordering::Greater
-                } else if probed_phase < phase - tolerance {
-                    Ordering::Less
-                } else {
-                    Ordering::Equal
-                }
-            })
-    }
-
-    // Insert a data point at the right position within an error domain
-    fn insert_data(&mut self, data_point: ErrorDataPoint) {
-        match self.search_phase(data_point.0, false) {
-            Err(pos) => {
-                trace!("Phase wasn't previously probed, record it");
-                self.phases.insert(pos, data_point);
-            }
-            Ok(pos) => {
-                trace!("Phase was already probed before");
-                debug_assert_eq!(self.phases[pos], data_point);
-            }
-        }
-    }
+    result.push((
+        PHASE_RANGE.end,
+        measure_error(sampling_rate, oscillator_freq, PHASE_RANGE.end),
+    ));
+    result
 }
 
 #[test]
@@ -585,7 +341,7 @@ fn reference_saw() {
         // Pick a relative oscillator frequency
         let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);
         let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
-        info!(
+        debug!(
             "Sampling a {} Hz saw at {} Hz (relative freq = {})",
             oscillator_freq,
             sampling_rate,
@@ -593,31 +349,12 @@ fn reference_saw() {
         );
 
         // Map the error landscape at that relative frequency
-        let mut error_landscape = ErrorLandscapeIntegrator::new();
-        loop {
-            // Check error at random phases
-            let initial_phase = rng.gen_range(PHASE_RANGE);
-            let error_measurement = measure_error(sampling_rate, oscillator_freq, initial_phase);
-
-            // Use these measurements to study the error landscape via a form
-            // of Monte Carlo integration
-            if error_landscape.integrate(error_measurement) {
-                debug!(
-                    "Error landscape changed, there are now {} error domains",
-                    error_landscape.domains().count()
-                );
-            }
-
-            // TODO: Stop when error domain list converges. But currently, it
-            //       doesn't converge. So I must first figure out why.
-            if error_landscape.domains().count() > 10000 {
-                debug!("Index,StartPhase,EndPhase,ErrorBits");
-                for (idx, domain) in error_landscape.domains().enumerate() {
-                    debug!("{},{},{},{}", idx, domain.start, domain.end, domain.error,);
-                }
-                todo!()
-            }
+        let error_vs_phase = measure_error_vs_phase(sampling_rate, oscillator_freq);
+        debug!("Error(phase) function is:");
+        for &(phase, error) in &error_vs_phase {
+            debug!("{},{}", phase, error);
         }
+
         // TODO: Do something useful
         todo!()
     }

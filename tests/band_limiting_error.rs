@@ -345,7 +345,21 @@ impl ErrorMap {
         let mut error_buckets = vec![0; RELATIVE_FREQ_BUCKETS * PHASE_BUCKETS];
 
         // Iterate over sampling rate / oscillator frequency ratios
-        // FIXME: This is parallelizable and should be parallelized
+        //
+        // FIXME: This is parallelizable and should be parallelized. The general
+        //        strategy for that is to precompute an array of
+        //        log_2_relative_rate, anditerate over that with rayon. The
+        //        tricky part is the reduction of error data.
+        //
+        //        As a starting point, we can try to do that using atomics. If
+        //        atomics end up being too costly, then we will fix the problem
+        //        through a more complex strategy:
+        //
+        //        1. Accumulate error data for a given relative sampling rate
+        //           in a thread-local buffer.
+        //        2. Once done, lock a line of error buckets in the global
+        //           error_buckets buffer and merge everything at once.
+        //
         for log2_relative_rate in
             irregular_samples(log2_relative_rate_range(), RELATIVE_FREQ_BUCKETS)
         {
@@ -482,6 +496,10 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         trace!("{},{},{}", relative_rate, phase, error);
 
         // Plot the current bucket on the error map
+        // FIXME: That bitmap takes a lot of time to draw, most likely due to
+        //        unnecessary coordinate conversions. I should draw the bitmap
+        //        myself using plotter's low-level backend functionalities.
+        //        Also, the drawing should be parallelizable as well.
         let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
         // FIXME: I shouldn't need that manual log2 on the plotting side
         plotting_area.draw_pixel((relative_rate.log2(), phase), &RGBColor(scaled_error, 0, 0))?;

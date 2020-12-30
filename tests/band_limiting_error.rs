@@ -210,14 +210,14 @@ use jigsaw::{
 use log::{debug, trace};
 use plotters::prelude::*;
 use rand::Rng;
-use std::ops::RangeInclusive;
+use std::ops::Range;
 
 // Region of interest within the oscillator configuration space
-const SAMPLING_RATE_RANGE: RangeInclusive<SamplingRateHz> = 44_100..=192_000;
-const OSCILLATOR_FREQ_RANGE: RangeInclusive<AudioFrequency> = 20.0..=20000.0;
-const PHASE_RANGE: RangeInclusive<AudioPhase> = 0.0..=AudioPhaseMod::consts::TAU;
+const SAMPLING_RATE_RANGE: Range<SamplingRateHz> = 44_100..192_000;
+const OSCILLATOR_FREQ_RANGE: Range<AudioFrequency> = 20.0..20000.0;
+const PHASE_RANGE: Range<AudioPhase> = 0.0..AudioPhaseMod::consts::TAU;
 
-// Number of phase and sampling rate buckets
+// Number of phase and relative frequency buckets
 //
 // This gives the spatial resolution of the final map of sawtooth wave error.
 // More buckets take more time to compute, but allow studying finer details of
@@ -226,33 +226,17 @@ const PHASE_RANGE: RangeInclusive<AudioPhase> = 0.0..=AudioPhaseMod::consts::TAU
 const PHASE_BUCKETS: usize = 1000;
 const RELATIVE_FREQ_BUCKETS: usize = 2000;
 
-/// Produce a set of irregularly spaced floating-point values that span a
-/// certain parameter range, such that...
+/// Minimmal number of error samples per bucket
 ///
-/// - The start and end of the parameter range are sampled.
-/// - If the parameter range were divided into N buckets, at least one sample
-///   would fall into each bucket.
+/// Forcing multiple samples per bucket will produce a less noisy error map,
+/// much like super-sampling antialiasing reduces aliasing artifacts in 3D
+/// graphics, but the price to pay is a quadratic increase of computation time.
 ///
-/// The use of irregular spacing allows us to avoid Moiré artifacts. Instead,
-/// spatially unresolved high-resolution details of the sampled function will
-/// manifest as random-looking noise in the sampled function's map.
-///
-/// The number of produced samples is stochastic, but will be twice the number
-/// of buckets on average.
-///
-fn irregular_samples(range: RangeInclusive<f32>, num_buckets: usize) -> impl Iterator<Item = f32> {
-    genawaiter::rc::gen!({
-        let mut rng = rand::thread_rng();
-        let (range_end, range_start) = (*range.end(), *range.start());
-        let bucket_size = (range_end - range_start) / (num_buckets as f32);
-        let mut coord = range_start;
-        while coord <= range_end {
-            yield_!(coord);
-            coord = rng.gen_range(coord..=(coord + bucket_size));
-        }
-        yield_!(range_end);
-    })
-    .into_iter()
+const SAMPLES_PER_BUCKET: usize = 2;
+
+/// Size of the phase buckets
+fn phase_bucket_size() -> AudioPhase {
+    (PHASE_RANGE.end - PHASE_RANGE.start) / (PHASE_BUCKETS as AudioPhase)
 }
 
 /// Range of the base-2 logarithm of the relative sample rate
@@ -267,12 +251,44 @@ fn irregular_samples(range: RangeInclusive<f32>, num_buckets: usize) -> impl Ite
 /// Among all possible logarithm bases, base-2 logarithms should be computable
 /// with optimal precision for IEEE-754 binary floats.
 ///
-fn log2_relative_rate_range() -> RangeInclusive<AudioFrequency> {
-    let start =
-        ((*SAMPLING_RATE_RANGE.start() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.end()).log2();
-    let end =
-        ((*SAMPLING_RATE_RANGE.end() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.start()).log2();
-    start..=end
+fn log2_relative_rate_range() -> Range<AudioFrequency> {
+    let start = ((SAMPLING_RATE_RANGE.start as AudioFrequency) / OSCILLATOR_FREQ_RANGE.end).log2();
+    let end = ((SAMPLING_RATE_RANGE.end as AudioFrequency) / OSCILLATOR_FREQ_RANGE.start).log2();
+    start..end
+}
+
+/// Size of the base-2 relative sample rate buckets
+fn log2_relative_rate_bucket_size() -> AudioFrequency {
+    (log2_relative_rate_range().end - log2_relative_rate_range().start)
+        / (RELATIVE_FREQ_BUCKETS as AudioFrequency)
+}
+
+/// Produce a set of irregularly spaced floating-point values that span a
+/// certain parameter range, such that...
+///
+/// - The start the parameter range if sampled.
+/// - If the parameter range were divided into num_buckets regularly spaced
+///   regions, at least SAMPLES_PER_BUCKET samples would fall into each bucket.
+///
+/// The use of irregular spacing allows us to avoid Moiré artifacts. Instead,
+/// spatially unresolved high-resolution details of the sampled function will
+/// manifest as random-looking noise in the sampled function's map.
+///
+/// The number of produced samples is random, but on average it will be twice
+/// the number of buckets.
+///
+fn irregular_samples(range: Range<f32>, num_buckets: usize) -> impl Iterator<Item = f32> {
+    genawaiter::rc::gen!({
+        let mut rng = rand::thread_rng();
+        let bucket_size = (range.end - range.start) / (num_buckets as f32);
+        let effective_bucket_size = bucket_size / (SAMPLES_PER_BUCKET as f32);
+        let mut coord = range.start;
+        while coord < range.end {
+            yield_!(coord);
+            coord = rng.gen_range(coord..=(coord + effective_bucket_size));
+        }
+    })
+    .into_iter()
 }
 
 /// Number of bits of error from an unlimited signal to its band-limited cousin
@@ -307,18 +323,136 @@ fn measure_error(
     error_bits
 }
 
+/// Map of the error of the reference saw vs the band-unlimited saw
+struct ErrorMap {
+    /// Map buckets in phase-major order
+    error_buckets: Vec<ErrorBits>,
+}
+//
+struct ErrorMapBucket<'error_map> {
+    /// Underlying ErrorMap
+    error_map: &'error_map ErrorMap,
+
+    /// Index of the bucket within the ErrorMap
+    linear_index: usize,
+}
+//
+impl ErrorMap {
+    /// Measure the error map
+    fn new() -> Self {
+        // Set up a bucket-filling infrastructure
+        let mut rng = rand::thread_rng();
+        let mut error_buckets = vec![0; RELATIVE_FREQ_BUCKETS * PHASE_BUCKETS];
+
+        // Iterate over sampling rate / oscillator frequency ratios
+        // FIXME: This is parallelizable and should be parallelized
+        for log2_relative_rate in
+            irregular_samples(log2_relative_rate_range(), RELATIVE_FREQ_BUCKETS)
+        {
+            // Pick a combination of sampling rate and oscillator sampling rate
+            // that matches the desired ratio.
+            let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
+            let min_sample_rate = SAMPLING_RATE_RANGE
+                .start
+                .max((relative_rate * OSCILLATOR_FREQ_RANGE.start).ceil() as SamplingRateHz);
+            let max_sample_rate = SAMPLING_RATE_RANGE
+                .end
+                .min((relative_rate * OSCILLATOR_FREQ_RANGE.end).floor() as SamplingRateHz)
+                .max(min_sample_rate);
+            let sampling_rate = rng.gen_range(min_sample_rate..=max_sample_rate);
+            let oscillator_freq = (sampling_rate as AudioFrequency) / relative_rate;
+            debug!(
+                "Sampling a {} Hz saw at {} Hz (relative rate = {})",
+                oscillator_freq, sampling_rate, relative_rate,
+            );
+
+            // Collect data about the oscillator's error for those parameters
+            for phase in irregular_samples(PHASE_RANGE, PHASE_BUCKETS) {
+                let error = measure_error(sampling_rate, oscillator_freq, phase);
+                let relative_rate_bucket = ((log2_relative_rate - log2_relative_rate_range().start)
+                    / log2_relative_rate_bucket_size())
+                .trunc() as usize;
+                assert!(relative_rate_bucket < RELATIVE_FREQ_BUCKETS);
+                let phase_bucket =
+                    ((phase - PHASE_RANGE.start) / phase_bucket_size()).trunc() as usize;
+                assert!(phase_bucket < RELATIVE_FREQ_BUCKETS);
+                let bucket_idx = relative_rate_bucket * PHASE_BUCKETS + phase_bucket;
+                error_buckets[bucket_idx] = error_buckets[bucket_idx].max(error);
+            }
+        }
+        Self { error_buckets }
+    }
+
+    /// Iterate over the buckets of the error map
+    fn iter(&self) -> impl Iterator<Item = ErrorMapBucket> {
+        (0..self.error_buckets.len()).map(move |linear_index| ErrorMapBucket {
+            error_map: self,
+            linear_index,
+        })
+    }
+}
+//
+impl ErrorMapBucket<'_> {
+    /// 2D bucket index
+    ///
+    /// Both indices are zero-based, the first index represents the sampling
+    /// rate / oscillator frequency coordinate and the second index represents
+    /// the phase coordinate.
+    fn index(&self) -> (usize, usize) {
+        let relative_rate_bucket = self.linear_index / PHASE_BUCKETS;
+        let phase_bucket = self.linear_index % PHASE_BUCKETS;
+        (relative_rate_bucket, phase_bucket)
+    }
+
+    /// Top-left coordinate of the bucket in the error map
+    fn start(&self) -> (AudioFrequency, AudioPhase) {
+        let (relative_rate_bucket, phase_bucket) = self.index();
+        let log2_relative_rate = log2_relative_rate_range().start
+            + (relative_rate_bucket as AudioFrequency) * log2_relative_rate_bucket_size();
+        let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
+        let phase = PHASE_RANGE.start + (phase_bucket as AudioPhase) * phase_bucket_size();
+        (relative_rate, phase)
+    }
+
+    /// Center coordinate of the bucket
+    fn center(&self) -> (AudioFrequency, AudioPhase) {
+        let (start_rate, start_phase) = self.start();
+        let (end_rate, end_phase) = self.end();
+        (
+            (start_rate + end_rate) / 2.0,
+            (start_phase + end_phase) / 2.0,
+        )
+    }
+
+    /// Bottom-right coordinate of the bucket in the error map
+    fn end(&self) -> (AudioFrequency, AudioPhase) {
+        let (mut relative_rate_bucket, mut phase_bucket) = self.index();
+        relative_rate_bucket += 1;
+        phase_bucket += 1;
+        let linear_index = relative_rate_bucket * PHASE_BUCKETS + phase_bucket;
+        ErrorMapBucket {
+            error_map: self.error_map,
+            linear_index,
+        }
+        .start()
+    }
+
+    /// Measured error within that bucket
+    fn error(&self) -> ErrorBits {
+        self.error_map.error_buckets[self.linear_index]
+    }
+}
+
 fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
     // Set up some infrastructure
     env_logger::init();
-    let mut rng = rand::thread_rng();
 
-    // Prepare to record some error data
-    let log2_relative_rate_range = log2_relative_rate_range();
-    let approx_rate_points = 2 * RELATIVE_FREQ_BUCKETS;
-    let approx_phase_points = 2 * PHASE_BUCKETS;
-    let mut error_data = Vec::with_capacity((approx_rate_points * approx_phase_points) as usize);
+    // Map the error landscape
+    let error_map = ErrorMap::new();
 
-    // Prepare to plot said error data
+    // Prepare to plot the error data
+    // FIXME: Plot size should be larger to account for legend
+    // FIXME: Find a way to remove that ugly dashed line in the middle
     let root = BitMapBackend::new(
         "reference_saw_error.png",
         (RELATIVE_FREQ_BUCKETS as _, PHASE_BUCKETS as _),
@@ -329,11 +463,7 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         .margin(20)
         .x_label_area_size(10)
         .y_label_area_size(10)
-        // FIXME: Plotters doesn't like inclusive ranges
-        .build_cartesian_2d(
-            *log2_relative_rate_range.start()..*log2_relative_rate_range.end(),
-            *PHASE_RANGE.start()..*PHASE_RANGE.end(),
-        )?;
+        .build_cartesian_2d(log2_relative_rate_range(), PHASE_RANGE)?;
     chart
         .configure_mesh()
         .disable_x_mesh()
@@ -341,57 +471,20 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         .draw()?;
     let plotting_area = chart.plotting_area();
 
-    // Iterate over relative oscillator frequencies
-    for log2_relative_rate in
-        irregular_samples(log2_relative_rate_range.clone(), RELATIVE_FREQ_BUCKETS)
-    {
-        // Pick a combination of frequency and sampling rate that matches the
-        // requested relative sampling rate.
-        let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
-        let min_sample_rate = (*SAMPLING_RATE_RANGE.start())
-            .max((relative_rate * OSCILLATOR_FREQ_RANGE.start()).ceil() as SamplingRateHz);
-        let max_sample_rate = (*SAMPLING_RATE_RANGE.end())
-            .min((relative_rate * OSCILLATOR_FREQ_RANGE.end()).floor() as SamplingRateHz)
-            .max(min_sample_rate);
-        let sampling_rate = rng.gen_range(min_sample_rate..=max_sample_rate);
-        let oscillator_freq = (sampling_rate as AudioFrequency) / relative_rate;
-        debug!(
-            "Sampling a {} Hz saw at {} Hz (relative rate = {})",
-            oscillator_freq, sampling_rate, relative_rate,
-        );
+    // Draw the error map
+    trace!("Error(freq, phase) table is:");
+    trace!("relrate,phase,error");
+    for bucket in error_map.iter() {
+        // Check out the current error map bucket
+        // FIXME: For this to become a real test, we should also inspect the error
+        let error = bucket.error();
+        let (relative_rate, phase) = bucket.center();
+        trace!("{},{},{}", relative_rate, phase, error);
 
-        // Collect data about the oscillator's error for those parameters
-        // FIXME: For this to be a real test, we should also inspect the error
-        let old_len = error_data.len();
-        error_data.extend(irregular_samples(PHASE_RANGE, PHASE_BUCKETS).map(|phase| {
-            (
-                log2_relative_rate,
-                phase,
-                measure_error(sampling_rate, oscillator_freq, phase),
-            )
-        }));
-
-        // Display the intermediate data in super-verbose mode
-        trace!(
-            "Error(phase) function at a relative sampling rate of {} is:",
-            relative_rate
-        );
-        trace!("phase,error");
-        for &(log2_relative_rate, phase, error) in &error_data[old_len..] {
-            trace!("{},{}", phase, error);
-            let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
-            // FIXME: Whenever multiple points fit a single pixel, they should be blended with
-            //        distance-based weighting or reduced into a max error instead of having the
-            //        latest pixel overwrite all of the previously drawn pixels
-            plotting_area.draw_pixel((log2_relative_rate, phase), &RGBColor(scaled_error, 0, 0))?;
-        }
-    }
-
-    // Display the final data in super-verbose mode
-    trace!("Full error(freq, phase) table is:");
-    trace!("log2(relrate),phase,error");
-    for (log2_relative_rate, phase, error) in error_data {
-        trace!("{},{},{}", log2_relative_rate, phase, error);
+        // Plot the current bucket on the error map
+        let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
+        // FIXME: I shouldn't need that manual log2 on the plotting side
+        plotting_area.draw_pixel((relative_rate.log2(), phase), &RGBColor(scaled_error, 0, 0))?;
     }
     Ok(())
 }

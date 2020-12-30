@@ -220,16 +220,30 @@ const PHASE_RANGE: RangeInclusive<AudioPhase> = 0.0..=AudioPhaseMod::consts::TAU
 /// Desired phase resolution of the error landscape
 const PHASE_RESOLUTION: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
 
-// Relative sampling rate range
-fn relative_rate_range() -> RangeInclusive<AudioFrequency> {
-    let start = (*SAMPLING_RATE_RANGE.start() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.end();
-    let end = (*SAMPLING_RATE_RANGE.end() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.start();
+/// Range of the base-2 logarithm of the relative sample rate
+///
+/// The relative sample rate is proportional to the number of harmonics in the
+/// band-limited sawtooth wave, and the error on a band-limited approximation of
+/// an infinite Fourier series converges logarithmically as the number of
+/// harmonics in said Fourier series increases. So to observe the convergence of
+/// the Fourier series, it is best to sample the relative frequency range
+/// logarithmically.
+///
+/// Among all possible logarithm bases, base-2 logarithms should be computable
+/// with optimal precision for IEEE-754 binary floats.
+///
+fn log2_relative_rate_range() -> RangeInclusive<AudioFrequency> {
+    let start =
+        ((*SAMPLING_RATE_RANGE.start() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.end()).log2();
+    let end =
+        ((*SAMPLING_RATE_RANGE.end() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.start()).log2();
     start..=end
 }
 
-/// Desired relative sampling rate resolution of the error landscape
-fn relative_rate_resolution() -> AudioFrequency {
-    0.1
+/// Desired resolution on the base-2 logarithm of the relative sample rate
+fn log2_relative_rate_resolution() -> AudioFrequency {
+    let range_width = *log2_relative_rate_range().end() - *log2_relative_rate_range().start();
+    range_width / 2000.0
 }
 
 /// Produce a set of floating-point values that include the start and end of the
@@ -245,7 +259,7 @@ fn irregular_coordinates(range: RangeInclusive<f32>, resolution: f32) -> impl It
         let mut coord = *range.start();
         while coord <= *range.end() {
             yield_!(coord);
-            coord = rng.gen_range(coord..coord + resolution);
+            coord = rng.gen_range(coord..=(coord + resolution));
         }
         yield_!(*range.end());
     })
@@ -310,10 +324,11 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = rand::thread_rng();
 
     // Prepare to record some error data
-    let rate_range = relative_rate_range();
-    let rate_range_width = rate_range.end() - rate_range.start();
-    let rate_resolution = relative_rate_resolution();
-    let approx_rate_points = 2.0 * rate_range_width / rate_resolution;
+    let log2_relative_rate_range = log2_relative_rate_range();
+    let log2_relative_rate_width =
+        log2_relative_rate_range.end() - log2_relative_rate_range.start();
+    let log2_relative_rate_resolution = log2_relative_rate_resolution();
+    let approx_rate_points = 2.0 * log2_relative_rate_width / log2_relative_rate_resolution;
     let phase_range_width = PHASE_RANGE.end() - PHASE_RANGE.start();
     let approx_phase_points = 2.0 * phase_range_width / PHASE_RESOLUTION;
     let mut error_data = Vec::with_capacity((approx_rate_points * approx_phase_points) as usize);
@@ -322,7 +337,7 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
     let root = BitMapBackend::new(
         "reference_saw_error.png",
         (
-            (rate_range_width / rate_resolution) as _,
+            (log2_relative_rate_width / log2_relative_rate_resolution) as _,
             (phase_range_width / PHASE_RESOLUTION) as _,
         ),
     )
@@ -334,7 +349,7 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         .y_label_area_size(10)
         // FIXME: Plotters doesn't like inclusive ranges
         .build_cartesian_2d(
-            *rate_range.start()..*rate_range.end(),
+            *log2_relative_rate_range.start()..*log2_relative_rate_range.end(),
             *PHASE_RANGE.start()..*PHASE_RANGE.end(),
         )?;
     chart
@@ -345,11 +360,20 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
     let plotting_area = chart.plotting_area();
 
     // Iterate over relative oscillator frequencies
-    for relative_rate in irregular_coordinates(rate_range, rate_resolution) {
-        // Pick a random oscillator frequency and deduce the sampling rate
-        // FIXME: This shouldn't be over the whole frequency range ?
-        let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
-        let sampling_rate = (relative_rate * oscillator_freq) as SamplingRateHz;
+    for log2_relative_rate in irregular_coordinates(
+        log2_relative_rate_range.clone(),
+        log2_relative_rate_resolution,
+    ) {
+        // Pick a combination of frequency and sampling rate that matches the
+        // requested relative sampling rate.
+        let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
+        let min_sample_rate = (*SAMPLING_RATE_RANGE.start())
+            .max((relative_rate * OSCILLATOR_FREQ_RANGE.start()).ceil() as SamplingRateHz);
+        let max_sample_rate = (*SAMPLING_RATE_RANGE.end())
+            .min((relative_rate * OSCILLATOR_FREQ_RANGE.end()).floor() as SamplingRateHz)
+            .max(min_sample_rate);
+        let sampling_rate = rng.gen_range(min_sample_rate..=max_sample_rate);
+        let oscillator_freq = (sampling_rate as AudioFrequency) / relative_rate;
         debug!(
             "Sampling a {} Hz saw at {} Hz (relative rate = {})",
             oscillator_freq, sampling_rate, relative_rate,
@@ -361,7 +385,7 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         error_data.extend(
             irregular_coordinates(PHASE_RANGE, PHASE_RESOLUTION).map(|phase| {
                 (
-                    relative_rate,
+                    log2_relative_rate,
                     phase,
                     measure_error(sampling_rate, oscillator_freq, phase),
                 )
@@ -374,21 +398,21 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
             relative_rate
         );
         trace!("phase,error");
-        for &(relative_rate, phase, error) in &error_data[old_len..] {
+        for &(log2_relative_rate, phase, error) in &error_data[old_len..] {
             trace!("{},{}", phase, error);
             let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
             // FIXME: Whenever multiple points fit a single pixel, they should be blended with
-            //        distance-based weighting instead of having the latest pixel overwrite all of
-            //        the previously drawn pixels
-            plotting_area.draw_pixel((relative_rate, phase), &RGBColor(scaled_error, 0, 0))?;
+            //        distance-based weighting or reduced into a max error instead of having the
+            //        latest pixel overwrite all of the previously drawn pixels
+            plotting_area.draw_pixel((log2_relative_rate, phase), &RGBColor(scaled_error, 0, 0))?;
         }
     }
 
-    // Display the final data in debug mode
-    debug!("Full error(freq, phase) table is:");
-    debug!("relrate,phase,error");
-    for (relative_rate, phase, error) in error_data {
-        debug!("{},{},{}", relative_rate, phase, error);
+    // Display the final data in super-verbose mode
+    trace!("Full error(freq, phase) table is:");
+    trace!("log2(relrate),phase,error");
+    for (log2_relative_rate, phase, error) in error_data {
+        trace!("{},{},{}", log2_relative_rate, phase, error);
     }
     Ok(())
 }
@@ -398,49 +422,3 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
 fn reference_saw() {
     reference_saw_impl().unwrap()
 }
-
-/*
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let root =
-        BitMapBackend::new("plotters-doc-data/mandelbrot.png", (800, 600)).into_drawing_area();
-
-    root.fill(&WHITE)?;
-
-    let mut chart = ChartBuilder::on(&root)
-        .margin(20)
-        .x_label_area_size(10)
-        .y_label_area_size(10)
-        .build_cartesian_2d(-2.1f64..0.6f64, -1.2f64..1.2f64)?;
-
-    chart
-        .configure_mesh()
-        .disable_x_mesh()
-        .disable_y_mesh()
-        .draw()?;
-
-    let plotting_area = chart.plotting_area();
-
-    let range = plotting_area.get_pixel_range();
-
-    let (pw, ph) = (range.0.end - range.0.start, range.1.end - range.1.start);
-    let (xr, yr) = (chart.x_range(), chart.y_range());
-
-    for (x, y, c) in mandelbrot_set(xr, yr, (pw as usize, ph as usize), 100) {
-        if c != 100 {
-            plotting_area.draw_pixel((x, y), &HSLColor(c as f64 / 100.0, 1.0, 0.5))?;
-        } else {
-            plotting_area.draw_pixel((x, y), &BLACK)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn mandelbrot_set(
-    real: Range<f64>,
-    complex: Range<f64>,
-    samples: (usize, usize),
-    max_iter: usize,
-) -> impl Iterator<Item = (f64, f64, usize)> {
-    ...
-} */

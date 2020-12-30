@@ -205,20 +205,55 @@
 use genawaiter::yield_;
 use jigsaw::{
     unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, Oscillator,
-    OscillatorPhase, ReferenceSaw, SamplingRateHz,
+    ReferenceSaw, SamplingRateHz,
 };
 use log::{debug, trace};
 use plotters::prelude::*;
 use rand::Rng;
 use std::ops::RangeInclusive;
 
-// Sampled region of the oscillator configuration space
+// Region of interest within the oscillator configuration space
 const SAMPLING_RATE_RANGE: RangeInclusive<SamplingRateHz> = 44_100..=192_000;
 const OSCILLATOR_FREQ_RANGE: RangeInclusive<AudioFrequency> = 20.0..=20000.0;
 const PHASE_RANGE: RangeInclusive<AudioPhase> = 0.0..=AudioPhaseMod::consts::TAU;
 
-/// Desired phase resolution of the error landscape
-const PHASE_RESOLUTION: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
+// Number of phase and sampling rate buckets
+//
+// This gives the spatial resolution of the final map of sawtooth wave error.
+// More buckets take more time to compute, but allow studying finer details of
+// the band-limited saw's error landscape.
+//
+const PHASE_BUCKETS: usize = 1000;
+const RELATIVE_FREQ_BUCKETS: usize = 2000;
+
+/// Produce a set of irregularly spaced floating-point values that span a
+/// certain parameter range, such that...
+///
+/// - The start and end of the parameter range are sampled.
+/// - If the parameter range were divided into N buckets, at least one sample
+///   would fall into each bucket.
+///
+/// The use of irregular spacing allows us to avoid Moiré artifacts. Instead,
+/// spatially unresolved high-resolution details of the sampled function will
+/// manifest as random-looking noise in the sampled function's map.
+///
+/// The number of produced samples is stochastic, but will be twice the number
+/// of buckets on average.
+///
+fn irregular_samples(range: RangeInclusive<f32>, num_buckets: usize) -> impl Iterator<Item = f32> {
+    genawaiter::rc::gen!({
+        let mut rng = rand::thread_rng();
+        let (range_end, range_start) = (*range.end(), *range.start());
+        let bucket_size = (range_end - range_start) / (num_buckets as f32);
+        let mut coord = range_start;
+        while coord <= range_end {
+            yield_!(coord);
+            coord = rng.gen_range(coord..=(coord + bucket_size));
+        }
+        yield_!(range_end);
+    })
+    .into_iter()
+}
 
 /// Range of the base-2 logarithm of the relative sample rate
 ///
@@ -240,42 +275,11 @@ fn log2_relative_rate_range() -> RangeInclusive<AudioFrequency> {
     start..=end
 }
 
-/// Desired resolution on the base-2 logarithm of the relative sample rate
-fn log2_relative_rate_resolution() -> AudioFrequency {
-    let range_width = *log2_relative_rate_range().end() - *log2_relative_rate_range().start();
-    range_width / 2000.0
-}
-
-/// Produce a set of floating-point values that include the start and end of the
-/// input range and are spaced by at most the input resolution parameter
-///
-/// On average, data points will be spaced by half the resolution parameter, so
-/// this will produce an average of 2.0 * (range.end - range.start) / resolution
-/// data points with minimal spacing bias.
-///
-fn irregular_coordinates(range: RangeInclusive<f32>, resolution: f32) -> impl Iterator<Item = f32> {
-    genawaiter::rc::gen!({
-        let mut rng = rand::thread_rng();
-        let mut coord = *range.start();
-        while coord <= *range.end() {
-            yield_!(coord);
-            coord = rng.gen_range(coord..=(coord + resolution));
-        }
-        yield_!(*range.end());
-    })
-    .into_iter()
-}
-
 /// Number of bits of error from an unlimited signal to its band-limited cousin
 type ErrorBits = u8;
 
-/// Measure how the reference saw differs from the band-unlimited saw in a range
-/// of ERROR_INTEGRATION_RANGE around a certain phase.
-///
-/// Returns the actual central phase around which the error was measured (which
-/// will be a bit lower than the requested one due to phase sampling
-/// shenanigans), and the number of bits that differ.
-///
+/// Measure how the reference saw differs from the band-unlimited saw, for a
+/// certain set of parameters and at a certain phase
 fn measure_error(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
@@ -286,36 +290,21 @@ fn measure_error(
         phase,
         phase / AudioPhaseMod::consts::PI
     );
-    let phase_increment = OscillatorPhase::phase_increment(sampling_rate, oscillator_freq);
-    let initial_phase = phase - PHASE_RESOLUTION / 2.0;
-    let oscillator = ReferenceSaw::new(sampling_rate, oscillator_freq, initial_phase);
-    let osc_phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
-    let mut integrated_error_bits = 0;
-    trace!("Phase,BandLimited,TrueSaw,Difference,ErrorBits,IntegratedErrorBits");
-    for (phase, limited) in osc_phase
-        .zip(oscillator)
-        .take(1 + (PHASE_RESOLUTION / phase_increment).trunc() as usize)
-    {
-        let unlimited = unlimited_saw(phase);
-        let difference = limited - unlimited;
-        let correct_bits = (-(difference.abs().log2()))
-            .floor()
-            .max(0.0)
-            .min(u8::MAX as AudioSample) as u8;
-        let error_bits = (AudioSample::MANTISSA_DIGITS as u8).saturating_sub(correct_bits);
-        integrated_error_bits = integrated_error_bits.max(error_bits);
-        trace!(
-            "{},{},{},{},{},{}",
-            phase,
-            limited,
-            unlimited,
-            difference,
-            error_bits,
-            integrated_error_bits
-        );
-    }
-    trace!("Found an error of {} bits", integrated_error_bits);
-    integrated_error_bits
+    let mut oscillator = ReferenceSaw::new(sampling_rate, oscillator_freq, phase);
+    let limited = oscillator.next().unwrap();
+    let unlimited = unlimited_saw(phase);
+    let difference = limited - unlimited;
+    let correct_bits = (-(difference.abs().log2()))
+        .floor()
+        .max(0.0)
+        .min(u8::MAX as AudioSample) as u8;
+    let error_bits = (AudioSample::MANTISSA_DIGITS as u8).saturating_sub(correct_bits);
+    trace!(
+        "Found a difference of {} ({} bits of error)",
+        difference,
+        error_bits
+    );
+    error_bits
 }
 
 fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
@@ -325,21 +314,14 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
 
     // Prepare to record some error data
     let log2_relative_rate_range = log2_relative_rate_range();
-    let log2_relative_rate_width =
-        log2_relative_rate_range.end() - log2_relative_rate_range.start();
-    let log2_relative_rate_resolution = log2_relative_rate_resolution();
-    let approx_rate_points = 2.0 * log2_relative_rate_width / log2_relative_rate_resolution;
-    let phase_range_width = PHASE_RANGE.end() - PHASE_RANGE.start();
-    let approx_phase_points = 2.0 * phase_range_width / PHASE_RESOLUTION;
+    let approx_rate_points = 2 * RELATIVE_FREQ_BUCKETS;
+    let approx_phase_points = 2 * PHASE_BUCKETS;
     let mut error_data = Vec::with_capacity((approx_rate_points * approx_phase_points) as usize);
 
     // Prepare to plot said error data
     let root = BitMapBackend::new(
         "reference_saw_error.png",
-        (
-            (log2_relative_rate_width / log2_relative_rate_resolution) as _,
-            (phase_range_width / PHASE_RESOLUTION) as _,
-        ),
+        (RELATIVE_FREQ_BUCKETS as _, PHASE_BUCKETS as _),
     )
     .into_drawing_area();
     root.fill(&WHITE)?;
@@ -360,10 +342,9 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
     let plotting_area = chart.plotting_area();
 
     // Iterate over relative oscillator frequencies
-    for log2_relative_rate in irregular_coordinates(
-        log2_relative_rate_range.clone(),
-        log2_relative_rate_resolution,
-    ) {
+    for log2_relative_rate in
+        irregular_samples(log2_relative_rate_range.clone(), RELATIVE_FREQ_BUCKETS)
+    {
         // Pick a combination of frequency and sampling rate that matches the
         // requested relative sampling rate.
         let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
@@ -382,15 +363,13 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         // Collect data about the oscillator's error for those parameters
         // FIXME: For this to be a real test, we should also inspect the error
         let old_len = error_data.len();
-        error_data.extend(
-            irregular_coordinates(PHASE_RANGE, PHASE_RESOLUTION).map(|phase| {
-                (
-                    log2_relative_rate,
-                    phase,
-                    measure_error(sampling_rate, oscillator_freq, phase),
-                )
-            }),
-        );
+        error_data.extend(irregular_samples(PHASE_RANGE, PHASE_BUCKETS).map(|phase| {
+            (
+                log2_relative_rate,
+                phase,
+                measure_error(sampling_rate, oscillator_freq, phase),
+            )
+        }));
 
         // Display the intermediate data in super-verbose mode
         trace!(

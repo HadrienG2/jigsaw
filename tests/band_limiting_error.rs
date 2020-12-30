@@ -202,18 +202,22 @@
 //!   draw a map of the error vs relative frequency and phase. We could actually
 //!   draw that map ourselves using something like plotters.
 
+use genawaiter::yield_;
 use jigsaw::{
     unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, Oscillator,
     OscillatorPhase, ReferenceSaw, SamplingRateHz,
 };
 use log::{debug, trace};
 use rand::Rng;
-use std::ops::{Range, RangeInclusive};
+use std::ops::RangeInclusive;
 
 // Sampled region of the oscillator configuration space
 const SAMPLING_RATE_RANGE: RangeInclusive<SamplingRateHz> = 44_100..=192_000;
 const OSCILLATOR_FREQ_RANGE: RangeInclusive<AudioFrequency> = 20.0..=20000.0;
-const PHASE_RANGE: Range<AudioPhase> = 0.0..AudioPhaseMod::consts::TAU;
+const PHASE_RANGE: RangeInclusive<AudioPhase> = 0.0..=AudioPhaseMod::consts::TAU;
+
+/// Desired phase resolution of the error landscape
+const PHASE_RESOLUTION: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
 
 // Relative frequency range
 fn relative_freq_range() -> RangeInclusive<AudioFrequency> {
@@ -222,20 +226,34 @@ fn relative_freq_range() -> RangeInclusive<AudioFrequency> {
     start..=end
 }
 
-/// Desired phase resolution of the error landscape
-const ERROR_PHASE_RESOLUTION: AudioPhase = AudioPhaseMod::consts::TAU / 1000.0;
-
 /// Desired relative frequency resolution of the error landscape
 fn relative_freq_resolution() -> AudioFrequency {
     let range = relative_freq_range();
     (range.end() - range.start()) / 1000.0
 }
 
+/// Produce a set of floating-point values that include the start and end of the
+/// input range and are spaced by at most the input resolution parameter
+///
+/// On average, data points will be spaced by half the resolution parameter, so
+/// this will produce an average of 2.0 * (range.end - range.start) / resolution
+/// data points with minimal spacing bias.
+///
+fn irregular_coordinates(range: RangeInclusive<f32>, resolution: f32) -> impl Iterator<Item = f32> {
+    genawaiter::rc::gen!({
+        let mut rng = rand::thread_rng();
+        let mut coord = *range.start();
+        while coord <= *range.end() {
+            yield_!(coord);
+            coord = rng.gen_range(coord..coord + resolution);
+        }
+        yield_!(*range.end());
+    })
+    .into_iter()
+}
+
 /// Number of bits of error from an unlimited signal to its band-limited cousin
 type ErrorBits = u8;
-
-/// Error integration data point
-type ErrorDataPoint = (AudioPhase, ErrorBits);
 
 /// Measure how the reference saw differs from the band-unlimited saw in a range
 /// of ERROR_INTEGRATION_RANGE around a certain phase.
@@ -255,14 +273,14 @@ fn measure_error(
         phase / AudioPhaseMod::consts::PI
     );
     let phase_increment = OscillatorPhase::phase_increment(sampling_rate, oscillator_freq);
-    let initial_phase = phase - ERROR_PHASE_RESOLUTION / 2.0;
+    let initial_phase = phase - PHASE_RESOLUTION / 2.0;
     let oscillator = ReferenceSaw::new(sampling_rate, oscillator_freq, initial_phase);
     let osc_phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
     let mut integrated_error_bits = 0;
     trace!("Phase,BandLimited,TrueSaw,Difference,ErrorBits,IntegratedErrorBits");
     for (phase, limited) in osc_phase
         .zip(oscillator)
-        .take(1 + (ERROR_PHASE_RESOLUTION / phase_increment).trunc() as usize)
+        .take(1 + (PHASE_RESOLUTION / phase_increment).trunc() as usize)
     {
         let unlimited = unlimited_saw(phase);
         let difference = limited - unlimited;
@@ -286,61 +304,24 @@ fn measure_error(
     integrated_error_bits
 }
 
-/// Integrate data from measure_error() in order to iteratively approximate the
-/// error landcape of our sawtooth generator in a given
-/// (sampling rate, oscillator frequency) configuration.
-///
-/// We could exhaustively explore all floating-point phases from 0 to 2pi, but
-/// this would take us 2.pow(AudioPhase::MANTISSA_DIGITS) sawtooh wave
-/// computations per (sampling rate, sawtooth frequency) data points, which is
-/// too expensive to be practical. So we want a "good enough" approximation.
-///
-/// Our criterion for a "good enough" approximation is that the spatial
-/// resolution of our error measurements is good enough. Concretely, they should
-/// be spaced by no more than ERROR_INTEGRATION_RANGE.
-///
-/// But we should not space them by exactly ERROR_INTEGRATION_RANGE, because
-/// this regular sampling could lead us to miss important information. For
-/// example, if there is an error oscillation every ERROR_INTEGRATION_RANGE, we
-/// would not see it at all, not even a trace of it, when using regular
-/// sampling. Whereas with irregular sampling, we would see some kind of noise
-/// in the output error(phase) curve, which would tell us that
-/// ERROR_INTEGRATION_RANGE is too high and must be reduced.
-///
-/// To resolve this problem, we separate error measurements by a random number
-/// from the phase epsilon to ERROR_INTEGRATION_RANGE. This borrows from the
-/// Monte Carlo integration approach, in the sense that across infinitely many
-/// runs of this test suite, we will actually have explored the entire space of
-/// all possible audio phases between 0 and 2pi.
-///
-fn measure_error_vs_phase(
-    sampling_rate: SamplingRateHz,
-    oscillator_freq: AudioFrequency,
-) -> Vec<ErrorDataPoint> {
-    let mut rng = rand::thread_rng();
-    let mut phase = PHASE_RANGE.start;
-    let approx_num_points = (2.0 * AudioPhaseMod::consts::TAU / ERROR_PHASE_RESOLUTION) as usize;
-    let mut result = Vec::with_capacity(approx_num_points);
-    while phase <= PHASE_RANGE.end {
-        result.push((phase, measure_error(sampling_rate, oscillator_freq, phase)));
-        phase = rng.gen_range(phase..phase + ERROR_PHASE_RESOLUTION);
-    }
-    result.push((
-        PHASE_RANGE.end,
-        measure_error(sampling_rate, oscillator_freq, PHASE_RANGE.end),
-    ));
-    result
-}
-
 #[test]
 #[ignore]
 fn reference_saw() {
+    // Set up some infrastructure
     env_logger::init();
     let mut rng = rand::thread_rng();
-    loop {
-        // Pick a relative oscillator frequency
+
+    // Prepare to record some error data
+    let approx_freq_points = 2.0 * (relative_freq_range().end() - relative_freq_range().start())
+        / relative_freq_resolution();
+    let approx_phase_points = 2.0 * (PHASE_RANGE.end() - PHASE_RANGE.start()) / PHASE_RESOLUTION;
+    let mut error_data = Vec::with_capacity((approx_freq_points * approx_phase_points) as usize);
+
+    // Iterate over relative oscillator frequencies
+    for relative_freq in irregular_coordinates(relative_freq_range(), relative_freq_resolution()) {
+        // Pick a random sampling rate and deduce the oscillator frequency
         let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);
-        let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
+        let oscillator_freq = relative_freq * (sampling_rate as AudioFrequency);
         debug!(
             "Sampling a {} Hz saw at {} Hz (relative freq = {})",
             oscillator_freq,
@@ -348,16 +329,34 @@ fn reference_saw() {
             oscillator_freq / sampling_rate as AudioFrequency
         );
 
-        // Map the error landscape at that relative frequency
-        let error_vs_phase = measure_error_vs_phase(sampling_rate, oscillator_freq);
-        debug!("Error(phase) function is:");
-        for &(phase, error) in &error_vs_phase {
-            debug!("{},{}", phase, error);
-        }
+        // Collect data about the oscillator's error for those parameters
+        // FIXME: For this to be a real test, we should also inspect the error
+        let old_len = error_data.len();
+        error_data.extend(
+            irregular_coordinates(PHASE_RANGE, PHASE_RESOLUTION).map(|phase| {
+                (
+                    relative_freq,
+                    phase,
+                    measure_error(sampling_rate, oscillator_freq, phase),
+                )
+            }),
+        );
 
-        // TODO: Do something useful
-        todo!()
+        // Display the intermediate data in super-verbose mode
+        trace!(
+            "Error(phase) function at a relative freq of {} is:",
+            relative_freq
+        );
+        trace!("phase,error");
+        for &(_relative_freq, phase, error) in &error_data[old_len..] {
+            trace!("{},{}", phase, error);
+        }
     }
-    // TODO: Do something useful
-    todo!()
+
+    // Display the final data in debug mode
+    debug!("Full error(freq, phase) table is:");
+    debug!("relfreq,phase,error");
+    for (relative_freq, phase, error) in error_data {
+        debug!("{},{},{}", relative_freq, phase, error);
+    }
 }

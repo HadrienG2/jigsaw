@@ -13,6 +13,7 @@ more-asserts = "0.2"
 [dev-dependencies]
 criterion = "0.3"
 env_logger = "0.8"
+genawaiter = "0.99"
 quickcheck = "0.9"
 rand = "0.8"
 

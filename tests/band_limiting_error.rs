@@ -267,6 +267,8 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
     const X_MARGIN: u32 = 50;
     const Y_MARGIN: u32 = 60;
     const LABEL_SIZE: u32 = 20;
+    const NUM_X_LABELS: usize = 12;
+    const NUM_Y_LABELS: usize = 18;
     let relative_freq_buckets = RELATIVE_FREQ_BUCKETS as u32;
     let phase_buckets = PHASE_BUCKETS as u32;
     let phase_range_in_pi = (PHASE_RANGE.start / PI)..(PHASE_RANGE.end / PI);
@@ -287,7 +289,9 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         .label_style(("sans-serif", LABEL_SIZE))
         .x_desc("Sampling rate / oscillator frequency")
         .x_label_formatter(&|&log2_x| format!("{:.0}", (2.0f32).powf(log2_x)))
+        .x_labels(NUM_X_LABELS)
         .y_desc("Phase in units of pi")
+        .y_labels(NUM_Y_LABELS)
         .draw()?;
     let plotting_area = chart.plotting_area();
     assert_eq!(

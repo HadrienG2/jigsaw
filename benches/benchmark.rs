@@ -1,5 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Bencher, Criterion, Throughput};
-use jigsaw::{AudioFrequency, F32SinSaw, Oscillator, ReferenceSaw, SamplingRateHz};
+use jigsaw::{
+    AudioFrequency, F32SinSaw, IterativeSinSaw, Oscillator, ReferenceSaw, SamplingRateHz,
+};
 
 // Generate 1ms of oscillator signal, so that Criterion's per-second throughput
 // measurement represents concurrent real-time signal generation abilities.
@@ -33,6 +35,10 @@ pub fn saw_benchmark(criterion: &mut Criterion) {
             group.bench_function(
                 "f32 sinus",
                 oscillator_benchmark::<F32SinSaw>(sampling_rate, saw_freq),
+            );
+            group.bench_function(
+                "Iterative sinus",
+                oscillator_benchmark::<IterativeSinSaw>(sampling_rate, saw_freq),
             );
         }
     }

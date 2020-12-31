@@ -13,8 +13,8 @@ use crate::{
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 use jigsaw::{
-    unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, F32SinSaw, ReferenceSaw,
-    SamplingRateHz,
+    unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, F32SinSaw,
+    IterativeSinSaw, ReferenceSaw, SamplingRateHz,
 };
 use log::{debug, info, trace};
 use plotters::prelude::*;
@@ -290,13 +290,26 @@ fn reference_vs_unlimited_saw() {
 
 #[test]
 #[ignore]
-/// Compare the optimized saw to the reference saw
+/// Compare the saw with single-precision sinus to the reference saw
 fn f32sin_vs_reference_saw() {
     init_logger();
     plot_error(
         BandLimitedSignal::<F32SinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
         "f32sin_vs_reference_saw.png",
+    )
+    .unwrap()
+}
+
+#[test]
+#[ignore]
+/// Compare the saw with iterative sinus to the reference saw
+fn itersin_vs_reference_saw() {
+    init_logger();
+    plot_error(
+        BandLimitedSignal::<IterativeSinSaw>::new(),
+        BandLimitedSignal::<ReferenceSaw>::new(),
+        "itersin_vs_reference_saw.png",
     )
     .unwrap()
 }

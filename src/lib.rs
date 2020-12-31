@@ -142,15 +142,53 @@ impl Iterator for F32SinSaw {
     }
 }
 
-// TODO: Do a version that still uses libm sinus, but uses f32 precision,
-//       multiplication by inverse, and caches all the 1/harmonic inverses in a
-//       lookup table. Compare precision and performance.
-//
-//       This should be done after extracting as many common blocks as possible
-//       from the reference implementation. We're almost there!
+/// Sawtooth generator that uses trigonometric identities to generate all
+/// harmonics from a "seed" fundamental sine
+pub struct IterativeSinSaw {
+    // Underlying oscillator phase iterator
+    phase: OscillatorPhase,
 
-// TODO: Implement the sinus avoidance optimizations that this project has
-//       always been meant to test, compare precision and performance.
+    // Number of harmonics to be generated
+    num_harmonics: HarmonicsCounter,
+}
+//
+impl Oscillator for IterativeSinSaw {
+    /// Set up a sawtooth oscillator.
+    fn new(
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        initial_phase: AudioPhase,
+    ) -> Self {
+        let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
+        Self {
+            phase,
+            num_harmonics,
+        }
+    }
+}
+//
+impl Iterator for IterativeSinSaw {
+    type Item = AudioSample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
+        let (sin_1, cos_1) = phase.sin_cos();
+        let (mut sin_n, mut cos_n) = (sin_1, cos_1);
+        let mut accumulator = -sin_1;
+        for harmonic in 2..=self.num_harmonics {
+            let harmonic = harmonic as f64;
+            let next_sin = sin_n * cos_1 + cos_n * sin_1;
+            let next_cos = cos_n * cos_1 - sin_n * sin_1;
+            accumulator -= next_sin / harmonic;
+            sin_n = next_sin;
+            cos_n = next_cos;
+        }
+        accumulator /= std::f64::consts::FRAC_PI_2;
+        Some(accumulator as _)
+    }
+}
+
+// TODO: Try it with frequency doubling
 
 // TODO: Rework oscillators so that they accept an in-situ filter for the
 //       purpose of avoiding Gibbs phenomenon when it is undesirable.

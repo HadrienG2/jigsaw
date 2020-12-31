@@ -143,8 +143,18 @@ impl Iterator for F32SinSaw {
     }
 }
 
-/// Sawtooth generator that uses trigonometric identities to generate all
-/// harmonics from a "seed" fundamental sine
+/// Sawtooth generator that uses the sin((n+1)x) and cos((n+1)x) trigonometric
+/// identities to generate all harmonics from a "seed" fundamental sine.
+///
+/// This algorithm produces identical results to the ReferenceSaw, but about 3x
+/// faster in scenarios where its performance is bottlenecked by harmonics
+/// generation (such as sampling a 20 Hz sinus at 192 kHz).
+///
+/// Note that if need be, there is headroom for precision improvements in the
+/// intermediate computations, by using a more sophisticated FFT-style harmonics
+/// generation harmonics that also leverages the sin(2x) and cos(2x)
+/// trigonometric identities.
+///
 pub struct IterativeSinSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
@@ -197,8 +207,6 @@ impl Iterator for IterativeSinSaw {
         Some(accumulator as _)
     }
 }
-
-// TODO: Try it with FFT-style frequency doubling
 
 // TODO: Rework oscillators so that they accept an in-situ filter for the
 //       purpose of avoiding Gibbs phenomenon when it is undesirable.

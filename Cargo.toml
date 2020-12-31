@@ -19,6 +19,9 @@ quickcheck = "0.9"
 rand = "0.8"
 rayon = "1.5"
 
+[lib]
+bench = false
+
 [[bench]]
 name = "benchmark"
 harness = false

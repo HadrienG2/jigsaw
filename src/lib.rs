@@ -18,6 +18,9 @@ pub use crate::phase::OscillatorPhase;
 #[cfg(test)]
 pub use crate::phase::OscillatorPhase;
 
+/// Display diagnostic information about wave harmonics generation
+const HARMONICS_DIAGNOSTICS: bool = false;
+
 // === SAW GENERATORS ===
 
 /// Sawtooth wave without band limiting
@@ -193,15 +196,17 @@ impl Iterator for IterativeSinSaw {
             accumulator -= next_sin / harmonic;
             sin_n = next_sin;
             cos_n = next_cos;
-            let error = sin_n - (harmonic * phase).sin();
-            let good_bits = (-error.abs().log2()).floor().max(0.0).min(u32::MAX as f64) as u32;
-            let error_bits = f64::MANTISSA_DIGITS.saturating_sub(good_bits);
-            trace!(
-                "f64 error on harmonic {} is {} ({} bits)",
-                harmonic,
-                error,
-                error_bits
-            );
+            if HARMONICS_DIAGNOSTICS {
+                let error = sin_n - (harmonic * phase).sin();
+                let good_bits = (-error.abs().log2()).floor().max(0.0).min(u32::MAX as f64) as u32;
+                let error_bits = f64::MANTISSA_DIGITS.saturating_sub(good_bits);
+                trace!(
+                    "f64 error on harmonic {} is {} ({} bits)",
+                    harmonic,
+                    error,
+                    error_bits
+                );
+            }
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)

@@ -217,7 +217,7 @@ pub struct InvMulSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
 
-    // Fourier coefficients of harmonics 2 and above
+    // Fourier coefficients of harmonics 1 and above
     fourier_coefficients: Box<[f64]>,
 }
 //
@@ -230,7 +230,7 @@ impl Oscillator for InvMulSaw {
     ) -> Self {
         use core::f64::consts::FRAC_PI_2;
         let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
-        let fourier_coefficients = (2..=num_harmonics)
+        let fourier_coefficients = (1..=num_harmonics)
             .map(|harmonic| 1.0 / (harmonic as f64 * FRAC_PI_2))
             .collect();
         Self {
@@ -247,11 +247,11 @@ impl Iterator for InvMulSaw {
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let (sin_1, cos_1) = phase.sin_cos();
         let mut sincos_n = (sin_1, cos_1);
-        let mut accumulator = -sin_1;
+        let mut accumulator = 0.0;
         for fourier_coeff in self.fourier_coefficients.iter().copied() {
+            accumulator -= sincos_n.0 * fourier_coeff;
             let (sin_n, cos_n) = sincos_n;
             sincos_n = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
-            accumulator -= sincos_n.0 * fourier_coeff;
         }
         Some(accumulator as _)
     }

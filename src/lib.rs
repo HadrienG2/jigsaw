@@ -42,7 +42,7 @@ pub struct ReferenceSaw {
     // Number of harmonics to be generated
     num_harmonics: HarmonicsCounter,
 }
-
+//
 impl Oscillator for ReferenceSaw {
     /// Set up a sawtooth oscillator.
     fn new(
@@ -69,7 +69,7 @@ impl Oscillator for ReferenceSaw {
         }
     }
 }
-
+//
 impl Iterator for ReferenceSaw {
     type Item = AudioSample;
 
@@ -100,18 +100,3 @@ impl Iterator for ReferenceSaw {
 
 // TODO: Rework oscillators so that they accept an in-situ filter for the
 //       purpose of avoiding Gibbs phenomenon when it is undesirable.
-
-// TODO: Add correctness tests of the reference saw
-// TODO: Test correctness of other saws by comparing them to the reference
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use synthesis::test_tools::test_oscillator;
-
-    /// Test that our reference band-limited saw matches its continuous cousin
-    /// that did not receive any band limiting.
-    #[test]
-    fn reference_saw() {
-        test_oscillator::<ReferenceSaw>(unlimited_saw);
-    }
-}

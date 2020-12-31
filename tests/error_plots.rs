@@ -1,7 +1,10 @@
 //! This test studies the error of band-limited signals, both with respect to
 //! each other and to band-unlimited signals.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::{
+    marker::PhantomData,
+    sync::atomic::{AtomicU8, Ordering},
+};
 use genawaiter::yield_;
 use jigsaw::{
     unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, Oscillator,
@@ -92,12 +95,69 @@ fn irregular_samples(range: Range<f32>, num_buckets: usize) -> impl Iterator<Ite
     .into_iter()
 }
 
+/// Trait implemented by band-limited oscillators and the underlying
+/// band-unlimited function
+//
+// FIXME: Right now, everything is assumed to be of magnitude 1
+//
+trait Signal {
+    /// Measure the signal at a certain point
+    fn measure(
+        &self,
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        phase: AudioPhase,
+    ) -> AudioSample;
+}
+//
+struct BandLimitedSignal<Osc: Oscillator>(PhantomData<Osc>);
+//
+impl<Osc: Oscillator> BandLimitedSignal<Osc> {
+    fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+//
+impl<Osc: Oscillator> Signal for BandLimitedSignal<Osc> {
+    fn measure(
+        &self,
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        phase: AudioPhase,
+    ) -> AudioSample {
+        Osc::new(sampling_rate, oscillator_freq, phase)
+            .next()
+            .unwrap()
+    }
+}
+//
+struct UnlimitedSignal<Sig: Fn(AudioPhase) -> AudioSample>(Sig);
+//
+impl<Sig: Fn(AudioPhase) -> AudioSample> UnlimitedSignal<Sig> {
+    fn new(signal: Sig) -> Self {
+        Self(signal)
+    }
+}
+//
+impl<Sig: Fn(AudioPhase) -> AudioSample> Signal for UnlimitedSignal<Sig> {
+    fn measure(
+        &self,
+        _sampling_rate: SamplingRateHz,
+        _oscillator_freq: AudioFrequency,
+        phase: AudioPhase,
+    ) -> AudioSample {
+        (self.0)(phase)
+    }
+}
+
 /// Number of bits of error from an unlimited signal to its band-limited cousin
 type ErrorBits = u8;
 
 /// Measure how the reference saw differs from the band-unlimited saw, for a
 /// certain set of parameters and at a certain phase
 fn measure_error(
+    signal: &impl Signal,
+    reference: &impl Signal,
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
     phase: AudioPhase,
@@ -107,10 +167,9 @@ fn measure_error(
         phase,
         phase / AudioPhaseMod::consts::PI
     );
-    let mut oscillator = ReferenceSaw::new(sampling_rate, oscillator_freq, phase);
-    let limited = oscillator.next().unwrap();
-    let unlimited = unlimited_saw(phase);
-    let difference = limited - unlimited;
+    let signal = signal.measure(sampling_rate, oscillator_freq, phase);
+    let reference = reference.measure(sampling_rate, oscillator_freq, phase);
+    let difference = signal - reference;
     let correct_bits = (-(difference.abs().log2()))
         .floor()
         .max(0.0)
@@ -140,7 +199,7 @@ struct ErrorMapBucket<'error_map> {
 //
 impl ErrorMap {
     /// Measure the error map
-    fn new() -> Self {
+    fn new(signal: impl Signal + Send + Sync, reference: impl Signal + Send + Sync) -> Self {
         // Set up a bucket-filling infrastructure
         let error_buckets = std::iter::from_fn(|| Some(AtomicU8::new(0)))
             .take(RELATIVE_FREQ_BUCKETS * PHASE_BUCKETS)
@@ -175,7 +234,8 @@ impl ErrorMap {
 
                 // Collect data about the oscillator's error for those parameters
                 for phase in irregular_samples(PHASE_RANGE, PHASE_BUCKETS) {
-                    let error = measure_error(sampling_rate, oscillator_freq, phase);
+                    let error =
+                        measure_error(&signal, &reference, sampling_rate, oscillator_freq, phase);
                     let relative_rate_bucket = ((log2_relative_rate
                         - log2_relative_rate_range().start)
                         / log2_relative_rate_bucket_size())
@@ -257,13 +317,12 @@ impl ErrorMapBucket<'_> {
     }
 }
 
-/// Compare the reference saw to a band-unlimited saw
-//
-// TODO: Write a generic version of this THAT can compare the reference saw to
-//       any Oscillator implementation, write an Oscilllator implementation that
-//       samples the band-unlimited saw, and make this test a special case of
-//       the generic version.
-fn reference_saw_vs_unlimited_impl() -> Result<(), Box<dyn std::error::Error>> {
+/// Compare two implementations of a given signal
+fn plot_error(
+    signal: impl Signal + Send + Sync,
+    reference: impl Signal + Send + Sync,
+    plot_filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     use AudioPhaseMod::consts::PI;
 
     // Set up some infrastructure
@@ -279,7 +338,7 @@ fn reference_saw_vs_unlimited_impl() -> Result<(), Box<dyn std::error::Error>> {
     let phase_buckets = PHASE_BUCKETS as u32;
     let phase_range_in_pi = (PHASE_RANGE.start / PI)..(PHASE_RANGE.end / PI);
     let root = BitMapBackend::new(
-        "reference_saw_vs_unlimited.png",
+        plot_filename,
         (relative_freq_buckets + Y_MARGIN, phase_buckets + X_MARGIN),
     )
     .into_drawing_area();
@@ -307,7 +366,7 @@ fn reference_saw_vs_unlimited_impl() -> Result<(), Box<dyn std::error::Error>> {
     let (base_x, base_y) = plotting_area.get_base_pixel();
 
     // Map the error landscape
-    let error_map = ErrorMap::new();
+    let error_map = ErrorMap::new(signal, reference);
 
     // Draw the error map
     trace!("Error(freq, phase) table is:");
@@ -334,5 +393,10 @@ fn reference_saw_vs_unlimited_impl() -> Result<(), Box<dyn std::error::Error>> {
 #[ignore]
 /// Compare the reference saw to a band-unlimited saw
 fn reference_saw_vs_unlimited() {
-    reference_saw_vs_unlimited_impl().unwrap()
+    plot_error(
+        BandLimitedSignal::<ReferenceSaw>::new(),
+        UnlimitedSignal::new(unlimited_saw),
+        "reference_saw_vs_unlimited.png",
+    )
+    .unwrap()
 }

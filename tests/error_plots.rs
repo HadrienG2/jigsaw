@@ -257,7 +257,13 @@ impl ErrorMapBucket<'_> {
     }
 }
 
-fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
+/// Compare the reference saw to a band-unlimited saw
+//
+// TODO: Write a generic version of this THAT can compare the reference saw to
+//       any Oscillator implementation, write an Oscilllator implementation that
+//       samples the band-unlimited saw, and make this test a special case of
+//       the generic version.
+fn reference_saw_vs_unlimited_impl() -> Result<(), Box<dyn std::error::Error>> {
     use AudioPhaseMod::consts::PI;
 
     // Set up some infrastructure
@@ -326,6 +332,7 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 #[ignore]
-fn reference_saw() {
-    reference_saw_impl().unwrap()
+/// Compare the reference saw to a band-unlimited saw
+fn reference_saw_vs_unlimited() {
+    reference_saw_vs_unlimited_impl().unwrap()
 }

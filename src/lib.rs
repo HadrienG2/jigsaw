@@ -79,9 +79,67 @@ impl Iterator for ReferenceSaw {
         // tricks such as turning division into multiplication by inverse.
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let mut accumulator = 0.0;
-        for harmonic in -(self.num_harmonics as i32)..0 {
+        // FIXME: This expression is wrong and must be fixed
+        for harmonic in 1..=self.num_harmonics {
             let harmonic = harmonic as f64;
             accumulator -= (harmonic * phase).sin() / harmonic;
+        }
+        accumulator /= std::f64::consts::FRAC_PI_2;
+        Some(accumulator as _)
+    }
+}
+
+// This is a performance-optimized version of the ReferenceSaw
+//
+// TODO: Deduplicate implementation wrt ReferenceSaw
+pub struct OptimizedSaw {
+    // Underlying oscillator phase iterator
+    phase: OscillatorPhase,
+
+    // Amplitude of the harmonics to be generated
+    harmonics_amplitude: Box<[f64]>,
+}
+//
+impl Oscillator for OptimizedSaw {
+    /// Set up a sawtooth oscillator.
+    fn new(
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        initial_phase: AudioPhase,
+    ) -> Self {
+        // Validate user inputs
+        audio::validate_sampling_rate(sampling_rate);
+        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
+        phase::validate_audio_phase(initial_phase);
+
+        // Set up the phase clock
+        let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
+
+        // Determine how many harmonics must be generated
+        let num_harmonics = synthesis::band_limited_harmonics(sampling_rate, oscillator_freq);
+        synthesis::check_harmonics_precision(num_harmonics, f64::MANTISSA_DIGITS);
+        let harmonics_amplitude = (1..=num_harmonics).map(|n| 1.0 / (n as f64)).collect();
+
+        // We're ready to generate signal
+        Self {
+            phase,
+            harmonics_amplitude,
+        }
+    }
+}
+//
+impl Iterator for OptimizedSaw {
+    type Item = AudioSample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // This implementation is meant to be as accurate as possible, not fast.
+        // So it uses double precision and avoids "performance over precision"
+        // tricks such as turning division into multiplication by inverse.
+        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
+        let mut accumulator = 0.0;
+        for (idx, amplitude) in self.harmonics_amplitude.iter().copied().enumerate() {
+            let harmonic = (idx + 1) as f64;
+            accumulator -= (harmonic * phase).sin() * amplitude;
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)

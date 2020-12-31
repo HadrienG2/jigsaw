@@ -48,6 +48,9 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
 }
 
 /// This crate is all about implementing digital oscillators for audio synthesis
+///
+/// All digital oscillators produce a band-limited approximation of a
+/// band-unlimited mathematical function ranging from -1.0 to 1.0.
 //
 // TODO: Add support for applying windowing to non-audible harmonics so that the
 //       Gibbs phenomenon is less annoying. The goal is to spread its energy so
@@ -59,6 +62,10 @@ pub trait Oscillator: Iterator<Item = AudioSample> {
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self;
+
+    // TODO: Add a method to query the amount of Gibbs phenomenon overshoot,
+    //       that users can leverage to tune down the amplitude when a signal is
+    //       to be sent to the loudspeakers and clipping must be avoided.
 }
 
 #[cfg(test)]

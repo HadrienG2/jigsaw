@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use jigsaw::{Oscillator, ReferenceSaw};
+use jigsaw::{OptimizedSaw, Oscillator, ReferenceSaw};
 
 pub fn saw_benchmark(criterion: &mut Criterion) {
     for sample_rate in [44_100, 96_000, 192_000].iter().copied() {
@@ -10,6 +10,8 @@ pub fn saw_benchmark(criterion: &mut Criterion) {
 
             let mut reference_saw = ReferenceSaw::new(sample_rate, saw_freq, 0.0);
             group.bench_function("Reference", |b| b.iter(|| reference_saw.next()));
+            let mut optimized_saw = OptimizedSaw::new(sample_rate, saw_freq, 0.0);
+            group.bench_function("Optimized", |b| b.iter(|| optimized_saw.next()));
         }
     }
 }

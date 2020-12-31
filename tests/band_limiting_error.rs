@@ -1,6 +1,7 @@
 //! This test studies the error of band-limited signals, both with respect to
 //! each other and to band-unlimited signals.
 
+use core::sync::atomic::{AtomicU8, Ordering};
 use genawaiter::yield_;
 use jigsaw::{
     unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, Oscillator,
@@ -9,6 +10,7 @@ use jigsaw::{
 use log::{debug, trace};
 use plotters::prelude::*;
 use rand::Rng;
+use rayon::prelude::*;
 use std::ops::Range;
 
 // Region of interest within the oscillator configuration space
@@ -140,59 +142,58 @@ impl ErrorMap {
     /// Measure the error map
     fn new() -> Self {
         // Set up a bucket-filling infrastructure
-        let mut rng = rand::thread_rng();
-        let mut error_buckets = vec![0; RELATIVE_FREQ_BUCKETS * PHASE_BUCKETS];
+        let error_buckets = std::iter::from_fn(|| Some(AtomicU8::new(0)))
+            .take(RELATIVE_FREQ_BUCKETS * PHASE_BUCKETS)
+            .collect::<Vec<_>>();
 
         // Iterate over sampling rate / oscillator frequency ratios
-        //
-        // FIXME: This is parallelizable and should be parallelized. The general
-        //        strategy for that is to precompute an array of
-        //        log_2_relative_rate, anditerate over that with rayon. The
-        //        tricky part is the reduction of error data.
-        //
-        //        As a starting point, we can try to do that using atomics. If
-        //        atomics end up being too costly, then we will fix the problem
-        //        through a more complex strategy:
-        //
-        //        1. Accumulate error data for a given relative sampling rate
-        //           in a thread-local buffer.
-        //        2. Once done, lock a line of error buckets in the global
-        //           error_buckets buffer and merge everything at once.
-        //
-        for log2_relative_rate in
+        let log2_relative_rates =
             irregular_samples(log2_relative_rate_range(), RELATIVE_FREQ_BUCKETS)
-        {
-            // Pick a combination of sampling rate and oscillator sampling rate
-            // that matches the desired ratio.
-            let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
-            let min_sample_rate = SAMPLING_RATE_RANGE
-                .start
-                .max((relative_rate * OSCILLATOR_FREQ_RANGE.start).ceil() as SamplingRateHz);
-            let max_sample_rate = SAMPLING_RATE_RANGE
-                .end
-                .min((relative_rate * OSCILLATOR_FREQ_RANGE.end).floor() as SamplingRateHz)
-                .max(min_sample_rate);
-            let sampling_rate = rng.gen_range(min_sample_rate..=max_sample_rate);
-            let oscillator_freq = (sampling_rate as AudioFrequency) / relative_rate;
-            debug!(
-                "Sampling a {} Hz saw at {} Hz (relative rate = {})",
-                oscillator_freq, sampling_rate, relative_rate,
-            );
+                .collect::<Vec<_>>();
+        log2_relative_rates
+            .into_par_iter()
+            .for_each(|log2_relative_rate| {
+                // Summon the thread-local random number generator
+                let mut rng = rand::thread_rng();
 
-            // Collect data about the oscillator's error for those parameters
-            for phase in irregular_samples(PHASE_RANGE, PHASE_BUCKETS) {
-                let error = measure_error(sampling_rate, oscillator_freq, phase);
-                let relative_rate_bucket = ((log2_relative_rate - log2_relative_rate_range().start)
-                    / log2_relative_rate_bucket_size())
-                .trunc() as usize;
-                assert!(relative_rate_bucket < RELATIVE_FREQ_BUCKETS);
-                let phase_bucket =
-                    ((phase - PHASE_RANGE.start) / phase_bucket_size()).trunc() as usize;
-                assert!(phase_bucket < RELATIVE_FREQ_BUCKETS);
-                let bucket_idx = relative_rate_bucket * PHASE_BUCKETS + phase_bucket;
-                error_buckets[bucket_idx] = error_buckets[bucket_idx].max(error);
-            }
-        }
+                // Pick a combination of sampling rate and oscillator sampling rate
+                // that matches the desired ratio.
+                let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
+                let min_sample_rate = SAMPLING_RATE_RANGE
+                    .start
+                    .max((relative_rate * OSCILLATOR_FREQ_RANGE.start).ceil() as SamplingRateHz);
+                let max_sample_rate = SAMPLING_RATE_RANGE
+                    .end
+                    .min((relative_rate * OSCILLATOR_FREQ_RANGE.end).floor() as SamplingRateHz)
+                    .max(min_sample_rate);
+                let sampling_rate = rng.gen_range(min_sample_rate..=max_sample_rate);
+                let oscillator_freq = (sampling_rate as AudioFrequency) / relative_rate;
+                debug!(
+                    "Sampling a {} Hz saw at {} Hz (relative rate = {})",
+                    oscillator_freq, sampling_rate, relative_rate,
+                );
+
+                // Collect data about the oscillator's error for those parameters
+                for phase in irregular_samples(PHASE_RANGE, PHASE_BUCKETS) {
+                    let error = measure_error(sampling_rate, oscillator_freq, phase);
+                    let relative_rate_bucket = ((log2_relative_rate
+                        - log2_relative_rate_range().start)
+                        / log2_relative_rate_bucket_size())
+                    .trunc() as usize;
+                    assert!(relative_rate_bucket < RELATIVE_FREQ_BUCKETS);
+                    let phase_bucket =
+                        ((phase - PHASE_RANGE.start) / phase_bucket_size()).trunc() as usize;
+                    assert!(phase_bucket < RELATIVE_FREQ_BUCKETS);
+                    let bucket_idx = relative_rate_bucket * PHASE_BUCKETS + phase_bucket;
+                    error_buckets[bucket_idx].fetch_max(error, Ordering::Relaxed);
+                }
+            });
+
+        // De-atomify the buckets
+        let error_buckets = error_buckets
+            .into_iter()
+            .map(AtomicU8::into_inner)
+            .collect();
         Self { error_buckets }
     }
 
@@ -257,32 +258,46 @@ impl ErrorMapBucket<'_> {
 }
 
 fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
+    use AudioPhaseMod::consts::PI;
+
     // Set up some infrastructure
     env_logger::init();
 
-    // Map the error landscape
-    let error_map = ErrorMap::new();
-
     // Prepare to plot the error data
-    // FIXME: Plot size should be larger to account for legend
-    // FIXME: Find a way to remove that ugly dashed line in the middle
+    const X_MARGIN: u32 = 50;
+    const Y_MARGIN: u32 = 60;
+    const LABEL_SIZE: u32 = 20;
+    let relative_freq_buckets = RELATIVE_FREQ_BUCKETS as u32;
+    let phase_buckets = PHASE_BUCKETS as u32;
+    let phase_range_in_pi = (PHASE_RANGE.start / PI)..(PHASE_RANGE.end / PI);
     let root = BitMapBackend::new(
-        "reference_saw_error.png",
-        (RELATIVE_FREQ_BUCKETS as _, PHASE_BUCKETS as _),
+        "reference_saw_vs_unlimited.png",
+        (relative_freq_buckets + Y_MARGIN, phase_buckets + X_MARGIN),
     )
     .into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
-        .margin(20)
-        .x_label_area_size(10)
-        .y_label_area_size(10)
-        .build_cartesian_2d(log2_relative_rate_range(), PHASE_RANGE)?;
+        .margin(0)
+        .x_label_area_size(X_MARGIN)
+        .y_label_area_size(Y_MARGIN)
+        .build_cartesian_2d(log2_relative_rate_range(), phase_range_in_pi)?;
     chart
         .configure_mesh()
-        .disable_x_mesh()
-        .disable_y_mesh()
+        .disable_mesh()
+        .label_style(("sans-serif", LABEL_SIZE))
+        .x_desc("Sampling rate / oscillator frequency")
+        .x_label_formatter(&|&log2_x| format!("{:.0}", (2.0f32).powf(log2_x)))
+        .y_desc("Phase in units of pi")
         .draw()?;
     let plotting_area = chart.plotting_area();
+    assert_eq!(
+        plotting_area.dim_in_pixel(),
+        (relative_freq_buckets, phase_buckets)
+    );
+    let (base_x, base_y) = plotting_area.get_base_pixel();
+
+    // Map the error landscape
+    let error_map = ErrorMap::new();
 
     // Draw the error map
     trace!("Error(freq, phase) table is:");
@@ -295,13 +310,12 @@ fn reference_saw_impl() -> Result<(), Box<dyn std::error::Error>> {
         trace!("{},{},{}", relative_rate, phase, error);
 
         // Plot the current bucket on the error map
-        // FIXME: That bitmap takes a lot of time to draw, most likely due to
-        //        unnecessary coordinate conversions. I should draw the bitmap
-        //        myself using plotter's low-level backend functionalities.
-        //        Also, the drawing should be parallelizable as well.
         let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
-        // FIXME: I shouldn't need that manual log2 on the plotting side
-        plotting_area.draw_pixel((relative_rate.log2(), phase), &RGBColor(scaled_error, 0, 0))?;
+        let (x_idx, y_idx) = bucket.index();
+        root.draw_pixel(
+            (x_idx as i32 + base_x, y_idx as i32 + base_y),
+            &RGBColor(scaled_error, 0, 0),
+        )?;
     }
     Ok(())
 }

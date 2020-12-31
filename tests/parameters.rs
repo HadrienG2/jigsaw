@@ -30,9 +30,9 @@ pub fn log2_relative_rate_range() -> Range<AudioFrequency> {
 
 // Number of phase and relative frequency buckets
 //
-// This gives the spatial resolution of the final map of sawtooth wave error.
-// More buckets take more time to compute, but allow studying finer details of
-// the band-limited saw's error landscape.
+// This gives the spatial resolution of the final map of the sawtooth wave's
+// properties. More buckets take more time to compute, but allow studying finer
+// details of the parameter space.
 //
 pub const NUM_PHASE_BUCKETS: usize = 1000;
 pub const NUM_RELATIVE_FREQ_BUCKETS: usize = 2000;
@@ -47,11 +47,13 @@ pub fn bucket_start(range: Range<f32>, num_buckets: usize, idx: usize) -> f32 {
     range.start + (idx as f32) * bucket_size(range, num_buckets)
 }
 
-/// Minimmal number of error samples per bucket
+/// Number of data points to be measured in every bucket
 ///
-/// Forcing multiple samples per bucket will produce a less noisy error map,
-/// much like super-sampling antialiasing reduces aliasing artifacts in 3D
-/// graphics, but the price to pay is a quadratic increase of computation time.
+/// More samples samples per bucket will produce a less noisy map of the
+/// sawtooth wave's properties, in a manner similar to how super-sampling
+/// antialiasing reduces aliasing artifacts in 3D graphics. As with
+/// super-sampling antialiasing, the price to pay is a quadratic increase of
+/// a test's running time.
 ///
 pub const SAMPLES_PER_BUCKET: usize = 2;
 

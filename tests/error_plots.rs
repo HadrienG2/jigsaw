@@ -13,10 +13,10 @@ use crate::{
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 use jigsaw::{
-    unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, OptimizedSaw,
-    ReferenceSaw, SamplingRateHz,
+    unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, F32SinSaw, ReferenceSaw,
+    SamplingRateHz,
 };
-use log::{debug, trace};
+use log::{debug, info, trace};
 use plotters::prelude::*;
 use rand::Rng;
 use rayon::prelude::*;
@@ -248,10 +248,12 @@ fn plot_error(
     // Draw the error map
     trace!("Error(freq, phase) table is:");
     trace!("relrate,phase,error");
+    let mut max_error = 0;
     for bucket in error_map.iter() {
         // Check out the current error map bucket
         // FIXME: For this to become a real test, we should also inspect the error
         let error = bucket.error();
+        max_error = max_error.max(error);
         let (relative_rate, phase) = bucket.center();
         trace!("{},{},{}", relative_rate, phase, error);
 
@@ -263,6 +265,7 @@ fn plot_error(
             &RGBColor(scaled_error, 0, 0),
         )?;
     }
+    info!("Maximum error is {} bits", max_error);
     Ok(())
 }
 
@@ -288,12 +291,12 @@ fn reference_vs_unlimited_saw() {
 #[test]
 #[ignore]
 /// Compare the optimized saw to the reference saw
-fn optimized_vs_reference_saw() {
+fn f32sin_vs_reference_saw() {
     init_logger();
     plot_error(
-        BandLimitedSignal::<OptimizedSaw>::new(),
+        BandLimitedSignal::<F32SinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "optimized_vs_reference_saw.png",
+        "f32sin_vs_reference_saw.png",
     )
     .unwrap()
 }

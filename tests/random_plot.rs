@@ -11,7 +11,7 @@ use crate::{
     },
     signal::{BandLimitedSignal, Signal, UnlimitedSignal},
 };
-use jigsaw::{unlimited_saw, OptimizedSaw, ReferenceSaw};
+use jigsaw::{unlimited_saw, F32SinSaw, ReferenceSaw};
 use rand::Rng;
 
 #[test]
@@ -23,8 +23,8 @@ fn compare_saws() {
     let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
     let unlimited = UnlimitedSignal::new(unlimited_saw);
     let reference = BandLimitedSignal::<ReferenceSaw>::new();
-    let optimized = BandLimitedSignal::<OptimizedSaw>::new();
-    println!("phase,unlimited,reference,optimized");
+    let optimized = BandLimitedSignal::<F32SinSaw>::new();
+    println!("phase,unlimited,reference,f32sin");
     for (_phase_bucket_idx, phases) in irregular_samples(PHASE_RANGE, NUM_PHASE_BUCKETS) {
         // FIXME: Do the plot, don't print CSV
         // FIXME: Turn this into a real test

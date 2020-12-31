@@ -32,9 +32,35 @@ pub fn unlimited_saw(phase: AudioPhase) -> AudioSample {
     (phase + PI).rem_euclid(TAU) / PI - 1.0
 }
 
-// This computes a band-limited sawtooth wave with maximal precision, at the
-// cost of speed. It is intended as a speed and precision reference against
-// which other speed-optimized sawtooth wave generators can be compared
+/// Common setup for any band-limited sawtooth wave generator
+///
+/// Returns a suitable phase generator and the number of harmonics to be generated
+fn setup_saw(
+    sampling_rate: SamplingRateHz,
+    oscillator_freq: AudioFrequency,
+    initial_phase: AudioPhase,
+) -> (OscillatorPhase, HarmonicsCounter) {
+    // Validate user inputs
+    audio::validate_sampling_rate(sampling_rate);
+    audio::validate_audio_frequency((sampling_rate, oscillator_freq));
+    phase::validate_audio_phase(initial_phase);
+
+    // Set up the phase clock
+    let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
+
+    // Determine how many harmonics must be generated
+    let num_harmonics = synthesis::band_limited_harmonics(sampling_rate, oscillator_freq);
+    synthesis::check_harmonics_precision(num_harmonics, f64::MANTISSA_DIGITS);
+
+    // Emit the basic setup
+    (phase, num_harmonics)
+}
+
+/// Reference sawtooth generator
+///
+/// This computes a band-limited sawtooth wave with maximal precision, at the
+/// cost of speed. It is intended as a speed and precision reference against
+/// which other speed-optimized sawtooth wave generators can be compared
 pub struct ReferenceSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
@@ -50,19 +76,7 @@ impl Oscillator for ReferenceSaw {
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self {
-        // Validate user inputs
-        audio::validate_sampling_rate(sampling_rate);
-        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
-        phase::validate_audio_phase(initial_phase);
-
-        // Set up the phase clock
-        let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
-
-        // Determine how many harmonics must be generated
-        let num_harmonics = synthesis::band_limited_harmonics(sampling_rate, oscillator_freq);
-        synthesis::check_harmonics_precision(num_harmonics, f64::MANTISSA_DIGITS);
-
-        // We're ready to generate signal
+        let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
         Self {
             phase,
             num_harmonics,
@@ -74,12 +88,8 @@ impl Iterator for ReferenceSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // This implementation is meant to be as accurate as possible, not fast.
-        // So it uses double precision and avoids "performance over precision"
-        // tricks such as turning division into multiplication by inverse.
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let mut accumulator = 0.0;
-        // FIXME: This expression is wrong and must be fixed
         for harmonic in 1..=self.num_harmonics {
             let harmonic = harmonic as f64;
             accumulator -= (harmonic * phase).sin() / harmonic;
@@ -89,57 +99,43 @@ impl Iterator for ReferenceSaw {
     }
 }
 
-// This is a performance-optimized version of the ReferenceSaw
-//
-// TODO: Deduplicate implementation wrt ReferenceSaw
-pub struct OptimizedSaw {
+/// Variation of ReferenceSaw that uses a single-precision sinus
+///
+/// This variation is about 30% faster, but it loses 10 bits of precision,
+/// which means that the result would be distinguishable from that of the
+/// ReferenceSaw in a 16-bit CD recording. That seems unacceptable.
+pub struct F32SinSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
 
-    // Amplitude of the harmonics to be generated
-    harmonics_amplitude: Box<[f64]>,
+    // Number of harmonics to be generated
+    num_harmonics: HarmonicsCounter,
 }
 //
-impl Oscillator for OptimizedSaw {
+impl Oscillator for F32SinSaw {
     /// Set up a sawtooth oscillator.
     fn new(
         sampling_rate: SamplingRateHz,
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self {
-        // Validate user inputs
-        audio::validate_sampling_rate(sampling_rate);
-        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
-        phase::validate_audio_phase(initial_phase);
-
-        // Set up the phase clock
-        let phase = OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase);
-
-        // Determine how many harmonics must be generated
-        let num_harmonics = synthesis::band_limited_harmonics(sampling_rate, oscillator_freq);
-        synthesis::check_harmonics_precision(num_harmonics, f64::MANTISSA_DIGITS);
-        let harmonics_amplitude = (1..=num_harmonics).map(|n| 1.0 / (n as f64)).collect();
-
-        // We're ready to generate signal
+        let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
         Self {
             phase,
-            harmonics_amplitude,
+            num_harmonics,
         }
     }
 }
 //
-impl Iterator for OptimizedSaw {
+impl Iterator for F32SinSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // This implementation is meant to be as accurate as possible, not fast.
-        // So it uses double precision and avoids "performance over precision"
-        // tricks such as turning division into multiplication by inverse.
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let mut accumulator = 0.0;
-        for (idx, amplitude) in self.harmonics_amplitude.iter().copied().enumerate() {
-            let harmonic = (idx + 1) as f64;
-            accumulator -= (harmonic * phase).sin() * amplitude;
+        for harmonic in 1..=self.num_harmonics {
+            let harmonic = harmonic as f64;
+            accumulator -= ((harmonic * phase) as f32).sin() as f64 / harmonic;
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)

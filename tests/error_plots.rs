@@ -1,10 +1,12 @@
 //! This test studies the error of band-limited signals, both with respect to
 //! each other and to band-unlimited signals.
 
+mod logger;
 mod parameters;
 mod signal;
 
 use crate::{
+    logger::init_logger,
     parameters::{
         bucket_start, irregular_samples, log2_relative_rate_range, NUM_PHASE_BUCKETS,
         NUM_RELATIVE_FREQ_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATE_RANGE,
@@ -20,7 +22,6 @@ use log::{debug, info, trace};
 use plotters::prelude::*;
 use rand::Rng;
 use rayon::prelude::*;
-use std::sync::Once;
 
 /// Number of bits of error from an unlimited signal to its band-limited cousin
 type ErrorBits = u8;
@@ -267,12 +268,6 @@ fn plot_error(
     }
     info!("Maximum error is {} bits", max_error);
     Ok(())
-}
-
-/// Initialize env_logger once
-fn init_logger() {
-    static LOGGER_INIT: Once = Once::new();
-    LOGGER_INIT.call_once(|| env_logger::init());
 }
 
 #[test]

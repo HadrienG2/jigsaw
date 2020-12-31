@@ -5,6 +5,7 @@ mod synthesis;
 pub(crate) mod test_tools;
 
 use crate::synthesis::HarmonicsCounter;
+use log::trace;
 
 pub use crate::{
     audio::{AudioFrequency, AudioSample, SamplingRateHz, MAX_SAMPLING_RATE, MIN_SAMPLING_RATE},
@@ -182,13 +183,22 @@ impl Iterator for IterativeSinSaw {
             accumulator -= next_sin / harmonic;
             sin_n = next_sin;
             cos_n = next_cos;
+            let error = sin_n - (harmonic * phase).sin();
+            let good_bits = (-error.abs().log2()).floor().max(0.0).min(u32::MAX as f64) as u32;
+            let error_bits = f64::MANTISSA_DIGITS.saturating_sub(good_bits);
+            trace!(
+                "f64 error on harmonic {} is {} ({} bits)",
+                harmonic,
+                error,
+                error_bits
+            );
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)
     }
 }
 
-// TODO: Try it with frequency doubling
+// TODO: Try it with FFT-style frequency doubling
 
 // TODO: Rework oscillators so that they accept an in-situ filter for the
 //       purpose of avoiding Gibbs phenomenon when it is undesirable.

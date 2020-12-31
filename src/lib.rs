@@ -187,15 +187,13 @@ impl Iterator for IterativeSinSaw {
     fn next(&mut self) -> Option<Self::Item> {
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let (sin_1, cos_1) = phase.sin_cos();
-        let (mut sin_n, mut cos_n) = (sin_1, cos_1);
+        let mut sincos_n = (sin_1, cos_1);
         let mut accumulator = -sin_1;
         for harmonic in 2..=self.num_harmonics {
             let harmonic = harmonic as f64;
-            let next_sin = sin_n * cos_1 + cos_n * sin_1;
-            let next_cos = cos_n * cos_1 - sin_n * sin_1;
-            accumulator -= next_sin / harmonic;
-            sin_n = next_sin;
-            cos_n = next_cos;
+            let (sin_n, cos_n) = sincos_n;
+            sincos_n = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
+            accumulator -= sincos_n.0 / harmonic;
             if HARMONICS_DIAGNOSTICS {
                 let error = sin_n - (harmonic * phase).sin();
                 let good_bits = (-error.abs().log2()).floor().max(0.0).min(u32::MAX as f64) as u32;
@@ -209,6 +207,52 @@ impl Iterator for IterativeSinSaw {
             }
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
+        Some(accumulator as _)
+    }
+}
+
+/// Variant of the IterativeSinSaw algorithm that replaces the division by the
+/// harmonic index with a multiplication by its inverse
+pub struct InvMulSaw {
+    // Underlying oscillator phase iterator
+    phase: OscillatorPhase,
+
+    // Fourier coefficients of harmonics 2 and above
+    fourier_coefficients: Box<[f64]>,
+}
+//
+impl Oscillator for InvMulSaw {
+    /// Set up a sawtooth oscillator.
+    fn new(
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        initial_phase: AudioPhase,
+    ) -> Self {
+        use core::f64::consts::FRAC_PI_2;
+        let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
+        let fourier_coefficients = (2..=num_harmonics)
+            .map(|harmonic| 1.0 / (harmonic as f64 * FRAC_PI_2))
+            .collect();
+        Self {
+            phase,
+            fourier_coefficients,
+        }
+    }
+}
+//
+impl Iterator for InvMulSaw {
+    type Item = AudioSample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
+        let (sin_1, cos_1) = phase.sin_cos();
+        let mut sincos_n = (sin_1, cos_1);
+        let mut accumulator = -sin_1;
+        for fourier_coeff in self.fourier_coefficients.iter().copied() {
+            let (sin_n, cos_n) = sincos_n;
+            sincos_n = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
+            accumulator -= sincos_n.0 * fourier_coeff;
+        }
         Some(accumulator as _)
     }
 }

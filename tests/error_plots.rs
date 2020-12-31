@@ -15,8 +15,7 @@ use crate::{
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 use jigsaw::{
-    unlimited_saw, AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, F32SinSaw,
-    IterativeSinSaw, ReferenceSaw, SamplingRateHz,
+    AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, ReferenceSaw, SamplingRateHz,
 };
 use log::{debug, info, trace};
 use plotters::prelude::*;
@@ -277,7 +276,7 @@ fn reference_vs_unlimited_saw() {
     init_logger();
     plot_error(
         BandLimitedSignal::<ReferenceSaw>::new(),
-        UnlimitedSignal::new(unlimited_saw),
+        UnlimitedSignal::new(jigsaw::unlimited_saw),
         "reference_vs_unlimited_saw.png",
     )
     .unwrap()
@@ -289,7 +288,7 @@ fn reference_vs_unlimited_saw() {
 fn f32sin_vs_reference_saw() {
     init_logger();
     plot_error(
-        BandLimitedSignal::<F32SinSaw>::new(),
+        BandLimitedSignal::<jigsaw::F32SinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
         "f32sin_vs_reference_saw.png",
     )
@@ -302,9 +301,22 @@ fn f32sin_vs_reference_saw() {
 fn itersin_vs_reference_saw() {
     init_logger();
     plot_error(
-        BandLimitedSignal::<IterativeSinSaw>::new(),
+        BandLimitedSignal::<jigsaw::IterativeSinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
         "itersin_vs_reference_saw.png",
+    )
+    .unwrap()
+}
+
+#[test]
+#[ignore]
+/// Compare the saw with multiply-by-inverse to the reference saw
+fn invmul_vs_reference_saw() {
+    init_logger();
+    plot_error(
+        BandLimitedSignal::<jigsaw::InvMulSaw>::new(),
+        BandLimitedSignal::<ReferenceSaw>::new(),
+        "invmul_vs_reference_saw.png",
     )
     .unwrap()
 }

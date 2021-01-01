@@ -48,7 +48,7 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
     }
 }
 
-/// Given a fundamental sinus' phase, compute the value of all of its (sin, cos)
+/// Given a fundamental sinus' phase, compute the value of all of its sinus
 /// harmonics up to a certain rank with maximal precision.
 ///
 /// You can pick the precision in which the harmonics will be computed, but f64
@@ -56,14 +56,13 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
 ///
 /// This is where the following harmonics computation methods come in.
 ///
-pub(crate) fn harmonics_precise<F: Float>(
+pub(crate) fn sin_harmonics_precise<F: Float>(
     phase: f64,
     num_harmonics: HarmonicsCounter,
-) -> impl Iterator<Item = (f64, f64)> {
+) -> impl Iterator<Item = f64> {
     (1..=num_harmonics).map(move |harmonic| {
         let phase = cast::<f64, F>(harmonic as f64 * phase).unwrap();
-        let (sin, cos) = phase.sin_cos();
-        (cast(sin).unwrap(), cast(cos).unwrap())
+        cast(phase.sin()).unwrap()
     })
 }
 
@@ -78,7 +77,7 @@ pub(crate) fn harmonics_precise<F: Float>(
 ///
 /// Also, it doesn't vectorize as well as the following approach.
 ///
-pub(crate) fn harmonics_iterative(
+pub(crate) fn sincos_harmonics_iterative(
     (sin_1, cos_1): (f64, f64),
     num_harmonics: HarmonicsCounter,
 ) -> impl Iterator<Item = (f64, f64)> {
@@ -100,7 +99,7 @@ pub(crate) fn harmonics_iterative(
 /// O(log2(num_harmonics)) terms, not O(num_harmonics) terms) and vectorizes
 /// very well so as long as the buffer fits in the L1 cache it will be faster.
 ///
-pub(crate) fn harmonics_smart(
+pub(crate) fn sincos_harmonics_smart(
     (sin_1, cos_1): (f64, f64),
     (sin_buf, cos_buf): (&mut [f64], &mut [f64]),
 ) {

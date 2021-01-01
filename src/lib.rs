@@ -112,8 +112,7 @@ impl Iterator for ReferenceSaw {
     fn next(&mut self) -> Option<Self::Item> {
         self.phase.next().map(|phase| {
             precise_saw(phase, |phase| {
-                synthesis::harmonics_precise::<f64>(phase, self.num_harmonics)
-                    .map(|(sin, _cos)| sin)
+                synthesis::sin_harmonics_precise::<f64>(phase, self.num_harmonics)
             })
         })
     }
@@ -154,8 +153,7 @@ impl Iterator for F32SinSaw {
     fn next(&mut self) -> Option<Self::Item> {
         self.phase.next().map(|phase| {
             precise_saw(phase, |phase| {
-                synthesis::harmonics_precise::<f32>(phase, self.num_harmonics)
-                    .map(|(sin, _cos)| sin)
+                synthesis::sin_harmonics_precise::<f32>(phase, self.num_harmonics)
             })
         })
     }
@@ -197,21 +195,36 @@ impl Iterator for IterativeSinSaw {
     fn next(&mut self) -> Option<Self::Item> {
         self.phase.next().map(|phase| {
             precise_saw(phase, |phase| {
-                synthesis::harmonics_iterative(phase.sin_cos(), self.num_harmonics)
+                synthesis::sincos_harmonics_iterative(phase.sin_cos(), self.num_harmonics)
                     .map(|(sin, _cos)| sin)
             })
         })
     }
 }
 
-/// Variant of the IterativeSinSaw algorithm that replaces the division by the
-/// harmonic index with a multiplication by its inverse
+/// Buffer that is suitable for storing Fourier coefficients
+type FourierCoefficients = Box<[f64]>;
+
+/// Precompute the Fourier coefficients of a band-limited saw function
+fn saw_fourier_coefficients(num_harmonics: HarmonicsCounter) -> impl Iterator<Item = f64> {
+    use std::f64::consts::FRAC_PI_2;
+    (1..=num_harmonics).map(|harmonic| -1.0 / (harmonic as f64 * FRAC_PI_2))
+}
+
+/// Variant of IterativeSinSaw that precomputes the Fourier coefficients
+///
+/// For some reason, this optimization was not worthwhile on previous
+/// algorithms. I suspect this to be a matter of cache locality: when the libm
+/// sinus implementation is invoked, it probably flushes the cache line
+/// associated with the Fourier coefficients, which could nullify the CPU
+/// performance benefit of not recomputing them on every sample.
+///
 pub struct InvMulSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
 
     // Fourier coefficients of harmonics 1 and above
-    fourier_coefficients: Box<[f64]>,
+    fourier_coefficients: FourierCoefficients,
 }
 //
 impl Oscillator for InvMulSaw {
@@ -221,11 +234,8 @@ impl Oscillator for InvMulSaw {
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self {
-        use core::f64::consts::FRAC_PI_2;
         let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
-        let fourier_coefficients = (1..=num_harmonics)
-            .map(|harmonic| -1.0 / (harmonic as f64 * FRAC_PI_2))
-            .collect();
+        let fourier_coefficients = saw_fourier_coefficients(num_harmonics).collect();
         Self {
             phase,
             fourier_coefficients,
@@ -243,7 +253,7 @@ impl Iterator for InvMulSaw {
         for (&coeff, (sin, _cos)) in
             self.fourier_coefficients
                 .iter()
-                .zip(synthesis::harmonics_iterative(
+                .zip(synthesis::sincos_harmonics_iterative(
                     phase.sin_cos(),
                     num_harmonics,
                 ))
@@ -254,6 +264,15 @@ impl Iterator for InvMulSaw {
     }
 }
 
+/// Buffer that is suitable for storing N (sin, cos) harmonics
+type SincosHarmonics = (Box<[f64]>, Box<[f64]>);
+
+/// Build a buffer that is suitable for storing N (sin, cos) harmonics
+fn sincos_harmonics_buffer(num_harmonics: HarmonicsCounter) -> SincosHarmonics {
+    let sin_buf = vec![0.0; num_harmonics as usize].into_boxed_slice();
+    (sin_buf.clone(), sin_buf)
+}
+
 /// Variant of the InvMulSaw algorithm that uses an FFT-style harmonics
 /// generation algorithm for extra precision and speed.
 pub struct SmartHarmonicsSaw {
@@ -261,10 +280,10 @@ pub struct SmartHarmonicsSaw {
     phase: OscillatorPhase,
 
     // Fourier coefficients of harmonics 1 and above
-    fourier_coefficients: Box<[f64]>,
+    fourier_coefficients: FourierCoefficients,
 
     // Buffers to store the sines and cosines of Fourier coefficients
-    sincos_buf: (Box<[f64]>, Box<[f64]>),
+    sincos_buffer: SincosHarmonics,
 }
 //
 impl Oscillator for SmartHarmonicsSaw {
@@ -274,17 +293,13 @@ impl Oscillator for SmartHarmonicsSaw {
         oscillator_freq: AudioFrequency,
         initial_phase: AudioPhase,
     ) -> Self {
-        use core::f64::consts::FRAC_PI_2;
         let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
-        let fourier_coefficients = (1..=num_harmonics)
-            .map(|harmonic| -1.0 / (harmonic as f64 * FRAC_PI_2))
-            .collect();
-        let sin_buf = vec![0.0; num_harmonics as usize].into_boxed_slice();
-        let sincos_buf = (sin_buf.clone(), sin_buf);
+        let fourier_coefficients = saw_fourier_coefficients(num_harmonics).collect();
+        let sincos_buffer = sincos_harmonics_buffer(num_harmonics);
         Self {
             phase,
             fourier_coefficients,
-            sincos_buf,
+            sincos_buffer,
         }
     }
 }
@@ -297,9 +312,9 @@ impl Iterator for SmartHarmonicsSaw {
 
         // Compute harmonics using an FFT-like algorithm
         let num_harmonics = self.fourier_coefficients.len();
-        let sin_buf = &mut self.sincos_buf.0[..num_harmonics];
-        let cos_buf = &mut self.sincos_buf.1[..num_harmonics];
-        synthesis::harmonics_smart(phase.sin_cos(), (sin_buf, cos_buf));
+        let sin_buf = &mut self.sincos_buffer.0[..num_harmonics];
+        let cos_buf = &mut self.sincos_buffer.1[..num_harmonics];
+        synthesis::sincos_harmonics_smart(phase.sin_cos(), (sin_buf, cos_buf));
 
         // Accumulate the saw signal in a way which the compiler can vectorize
         const NUM_ACCUMULATORS: usize = 1 << 6;
@@ -337,13 +352,13 @@ impl Iterator for SmartHarmonicsSaw {
 ///
 pub struct FullyIterativeSaw {
     // Buffers to store the sines and cosines of harmonics
-    sincos_phase_harmonics: (Box<[f64]>, Box<[f64]>),
+    sincos_phase_harmonics: SincosHarmonics,
 
     // (sin, cos) of the underlying phase increment and its harmonics
-    sincos_dphi_harmonics: (Box<[f64]>, Box<[f64]>),
+    sincos_dphi_harmonics: SincosHarmonics,
 
     // Fourier coefficients of harmonics 1 and above
-    fourier_coefficients: Box<[f64]>,
+    fourier_coefficients: FourierCoefficients,
 }
 //
 impl Oscillator for FullyIterativeSaw {
@@ -354,30 +369,27 @@ impl Oscillator for FullyIterativeSaw {
         initial_phase: AudioPhase,
     ) -> Self {
         // Do the basic setup that is common to all saw generator algorithms
-        use core::f64::consts::{FRAC_PI_2, PI};
+        use core::f64::consts::PI;
         let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
 
         // Compute the Fourier coefficients
-        let fourier_coefficients = (1..=num_harmonics)
-            .map(|harmonic| -1.0 / (harmonic as f64 * FRAC_PI_2))
-            .collect();
+        let fourier_coefficients = saw_fourier_coefficients(num_harmonics).collect();
 
         // Set up storage for harmonics
-        let sin_buf = vec![0.0; num_harmonics as usize].into_boxed_slice();
-        let mut sincos_phase_harmonics = (sin_buf.clone(), sin_buf);
+        let mut sincos_phase_harmonics = sincos_harmonics_buffer(num_harmonics);
         let mut sincos_dphi_harmonics = sincos_phase_harmonics.clone();
         let phase_increment = phase.phase_increment() as f64;
 
         // Compute the harmonics of the fundamental and the phase increment
         let fundamental_phase = initial_phase as f64 - PI - phase_increment;
-        synthesis::harmonics_smart(
+        synthesis::sincos_harmonics_smart(
             fundamental_phase.sin_cos(),
             (
                 &mut sincos_phase_harmonics.0[..],
                 &mut sincos_phase_harmonics.1[..],
             ),
         );
-        synthesis::harmonics_smart(
+        synthesis::sincos_harmonics_smart(
             phase_increment.sin_cos(),
             (
                 &mut sincos_dphi_harmonics.0[..],

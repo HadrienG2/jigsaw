@@ -231,7 +231,7 @@ impl Oscillator for InvMulSaw {
         use core::f64::consts::FRAC_PI_2;
         let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
         let fourier_coefficients = (1..=num_harmonics)
-            .map(|harmonic| 1.0 / (harmonic as f64 * FRAC_PI_2))
+            .map(|harmonic| -1.0 / (harmonic as f64 * FRAC_PI_2))
             .collect();
         Self {
             phase,
@@ -249,11 +249,112 @@ impl Iterator for InvMulSaw {
         let mut sincos_n = (sin_1, cos_1);
         let mut accumulator = 0.0;
         for fourier_coeff in self.fourier_coefficients.iter().copied() {
-            accumulator -= sincos_n.0 * fourier_coeff;
+            accumulator += sincos_n.0 * fourier_coeff;
             let (sin_n, cos_n) = sincos_n;
             sincos_n = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
         }
         Some(accumulator as _)
+    }
+}
+
+/// Variant of the InvMulSaw algorithm that uses an FFT-style harmonics
+/// generation algorithm on the ground that in addition to its precision
+/// benefits, it might be more vectorizable
+pub struct SmartHarmonicsSaw {
+    // Underlying oscillator phase iterator
+    phase: OscillatorPhase,
+
+    // Fourier coefficients of harmonics 1 and above
+    fourier_coefficients: Box<[f64]>,
+
+    // Buffers to store the sines and cosines of Fourier coefficients
+    sincos_buf: [Box<[f64]>; 2],
+}
+//
+impl Oscillator for SmartHarmonicsSaw {
+    /// Set up a sawtooth oscillator.
+    fn new(
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        initial_phase: AudioPhase,
+    ) -> Self {
+        use core::f64::consts::FRAC_PI_2;
+        let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
+        let fourier_coefficients = (1..=num_harmonics)
+            .map(|harmonic| -1.0 / (harmonic as f64 * FRAC_PI_2))
+            .collect();
+        let sin_buf = vec![0.0; num_harmonics as usize].into_boxed_slice();
+        let sincos_buf = [sin_buf.clone(), sin_buf];
+        Self {
+            phase,
+            fourier_coefficients,
+            sincos_buf,
+        }
+    }
+}
+//
+impl Iterator for SmartHarmonicsSaw {
+    type Item = AudioSample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
+
+        // Compute harmonics using an FFT-like algorithm
+        let num_harmonics = self.fourier_coefficients.len();
+        let (sin_buf, cos_buf) = self.sincos_buf.split_at_mut(1);
+        let sin_buf = &mut sin_buf[0][..num_harmonics];
+        let cos_buf = &mut cos_buf[0][..num_harmonics];
+        let (sin_1, cos_1) = phase.sin_cos();
+        sin_buf[0] = sin_1;
+        cos_buf[0] = cos_1;
+        let mut computed_harmonics = 1;
+        while computed_harmonics < num_harmonics {
+            let ref_cos = cos_buf[computed_harmonics - 1];
+            let ref_sin = sin_buf[computed_harmonics - 1];
+            let remaining_harmonics = num_harmonics - computed_harmonics;
+            let incoming_harmonics = computed_harmonics.min(remaining_harmonics);
+            for old_harmonic in 0..incoming_harmonics {
+                let new_harmonic = old_harmonic + computed_harmonics;
+                // Safety: This is safe because by construction, neither
+                //         old_harmonic not new_harmonic can go above
+                //         num_harmonics. It is necessary because right now,
+                //         rustc's bound check elision is not smart enough and
+                //         kills autovectorization, which is unacceptable.
+                unsafe {
+                    *sin_buf.get_unchecked_mut(new_harmonic) = sin_buf.get_unchecked(old_harmonic)
+                        * ref_cos
+                        + cos_buf.get_unchecked(old_harmonic) * ref_sin;
+                    *cos_buf.get_unchecked_mut(new_harmonic) = cos_buf.get_unchecked(old_harmonic)
+                        * ref_cos
+                        - sin_buf.get_unchecked(old_harmonic) * ref_sin;
+                }
+            }
+            computed_harmonics *= 2;
+        }
+
+        // Accumulate the saw signal in a way which the compiler can autovectorize
+        const NUM_ACCUMULATORS: usize = 64;
+        let mut accumulators = [0.0; NUM_ACCUMULATORS];
+        for (sins, coeffs) in sin_buf
+            .chunks(NUM_ACCUMULATORS)
+            .zip(self.fourier_coefficients.chunks(NUM_ACCUMULATORS))
+        {
+            for (accumulator, (&sin, &coeff)) in
+                accumulators.iter_mut().zip(sins.iter().zip(coeffs.iter()))
+            {
+                *accumulator += sin * coeff;
+            }
+        }
+        let mut num_accumulators = NUM_ACCUMULATORS;
+        while num_accumulators > 1 {
+            num_accumulators /= 2;
+            for i in 0..num_accumulators {
+                accumulators[i] += accumulators[i + num_accumulators];
+            }
+        }
+        let result: f64 = accumulators[0];
+
+        Some(result as _)
     }
 }
 

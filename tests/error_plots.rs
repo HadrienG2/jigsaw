@@ -320,3 +320,16 @@ fn invmul_vs_reference_saw() {
     )
     .unwrap()
 }
+
+#[test]
+#[ignore]
+/// Compare the saw using a smart FFT-like harmonics computation method
+fn smartharms_vs_reference_saw() {
+    init_logger();
+    plot_error(
+        BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new(),
+        BandLimitedSignal::<ReferenceSaw>::new(),
+        "smartharms_vs_reference_saw.png",
+    )
+    .unwrap()
+}

@@ -12,7 +12,6 @@ use crate::{
     },
     signal::{BandLimitedSignal, Signal, UnlimitedSignal},
 };
-use jigsaw::{unlimited_saw, F32SinSaw, InvMulSaw, IterativeSinSaw, ReferenceSaw};
 use rand::Rng;
 
 #[test]
@@ -23,24 +22,26 @@ fn compare_saws() {
     let mut rng = rand::thread_rng();
     let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);
     let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
-    let unlimited = UnlimitedSignal::new(unlimited_saw);
-    let reference = BandLimitedSignal::<ReferenceSaw>::new();
-    let f32sin = BandLimitedSignal::<F32SinSaw>::new();
-    let itersin = BandLimitedSignal::<IterativeSinSaw>::new();
-    let invmul = BandLimitedSignal::<InvMulSaw>::new();
-    println!("phase,unlimited,reference,f32sin,itersin,invmul");
+    let unlimited = UnlimitedSignal::new(jigsaw::unlimited_saw);
+    let reference = BandLimitedSignal::<jigsaw::ReferenceSaw>::new();
+    let f32sin = BandLimitedSignal::<jigsaw::F32SinSaw>::new();
+    let itersin = BandLimitedSignal::<jigsaw::IterativeSinSaw>::new();
+    let invmul = BandLimitedSignal::<jigsaw::InvMulSaw>::new();
+    let smartharms = BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new();
+    println!("phase,unlimited,reference,f32sin,itersin,invmul,smartharms");
     for (_phase_bucket_idx, phases) in irregular_samples(PHASE_RANGE, NUM_PHASE_BUCKETS) {
         // FIXME: Do the plot ourselves instead of printing CSV
         // FIXME: Turn this into a real test
         for phase in phases.iter().copied() {
             println!(
-                "{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{}",
                 phase,
                 unlimited.measure(sampling_rate, oscillator_freq, phase),
                 reference.measure(sampling_rate, oscillator_freq, phase),
                 f32sin.measure(sampling_rate, oscillator_freq, phase),
                 itersin.measure(sampling_rate, oscillator_freq, phase),
                 invmul.measure(sampling_rate, oscillator_freq, phase),
+                smartharms.measure(sampling_rate, oscillator_freq, phase),
             );
         }
     }

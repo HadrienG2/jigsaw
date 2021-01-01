@@ -1,7 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Bencher, Criterion, Throughput};
-use jigsaw::{
-    AudioFrequency, F32SinSaw, InvMulSaw, IterativeSinSaw, Oscillator, ReferenceSaw, SamplingRateHz,
-};
+use jigsaw::{AudioFrequency, Oscillator, SamplingRateHz};
 
 // Generate 1ms of oscillator signal, so that Criterion's per-second throughput
 // measurement represents concurrent real-time signal generation abilities.
@@ -30,19 +28,23 @@ pub fn saw_benchmark(criterion: &mut Criterion) {
             group.throughput(Throughput::Elements(1));
             group.bench_function(
                 "Reference",
-                oscillator_benchmark::<ReferenceSaw>(sampling_rate, saw_freq),
+                oscillator_benchmark::<jigsaw::ReferenceSaw>(sampling_rate, saw_freq),
             );
             group.bench_function(
                 "f32 sinus",
-                oscillator_benchmark::<F32SinSaw>(sampling_rate, saw_freq),
+                oscillator_benchmark::<jigsaw::F32SinSaw>(sampling_rate, saw_freq),
             );
             group.bench_function(
                 "Iterative sinus",
-                oscillator_benchmark::<IterativeSinSaw>(sampling_rate, saw_freq),
+                oscillator_benchmark::<jigsaw::IterativeSinSaw>(sampling_rate, saw_freq),
             );
             group.bench_function(
                 "Multiply by inverse",
-                oscillator_benchmark::<InvMulSaw>(sampling_rate, saw_freq),
+                oscillator_benchmark::<jigsaw::InvMulSaw>(sampling_rate, saw_freq),
+            );
+            group.bench_function(
+                "Smart harmonics",
+                oscillator_benchmark::<jigsaw::SmartHarmonicsSaw>(sampling_rate, saw_freq),
             );
         }
     }

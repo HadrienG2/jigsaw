@@ -32,7 +32,7 @@ fn compare_random_saws() {
     println!("phase,unlimited,reference,f32sin,itersin,invmul,smartharms,fullit");
     for (_phase_bucket_idx, phases) in irregular_samples(PHASE_RANGE, NUM_PHASE_BUCKETS) {
         // FIXME: Do the plot ourselves instead of printing CSV
-        // FIXME: Turn this into a real test
+        // FIXME: Turn this into a real test?
         for phase in phases.iter().copied() {
             println!(
                 "{},{},{},{},{},{},{},{}",

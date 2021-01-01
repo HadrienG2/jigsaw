@@ -223,7 +223,7 @@ pub struct InvMulSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
 
-    // Fourier coefficients of harmonics 1 and above
+    // Fourier coefficients
     fourier_coefficients: FourierCoefficients,
 }
 //
@@ -311,10 +311,10 @@ pub struct SmartHarmonicsSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
 
-    // Fourier coefficients of harmonics 1 and above
+    // Fourier coefficients
     fourier_coefficients: FourierCoefficients,
 
-    // Buffers to store the sines and cosines of Fourier coefficients
+    // Buffers to compute the harmonic (sin, cos) series
     sincos_buffer: SincosHarmonics,
 }
 //
@@ -370,7 +370,7 @@ pub struct FullyIterativeSaw {
     // (sin, cos) of the underlying phase increment and its harmonics
     sincos_dphi_harmonics: SincosHarmonics,
 
-    // Fourier coefficients of harmonics 1 and above
+    // Fourier coefficients
     fourier_coefficients: FourierCoefficients,
 }
 //

@@ -4,9 +4,6 @@ use crate::signal::Signal;
 use jigsaw::{AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, SamplingRateHz};
 use log::trace;
 
-/// Number of bits of error from a signal to another
-pub type ErrorBits = u8;
-
 /// Measure how a signal differs from another, for a certain set of parameters
 /// and at a certain phase
 pub fn measure_error(
@@ -15,7 +12,7 @@ pub fn measure_error(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
     phase: AudioPhase,
-) -> ErrorBits {
+) -> u8 {
     trace!(
         "Probing error at phase {} (= {}pi)",
         phase,

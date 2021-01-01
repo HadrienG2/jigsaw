@@ -273,6 +273,38 @@ fn sincos_harmonics_buffer(num_harmonics: HarmonicsCounter) -> SincosHarmonics {
     (sin_buf.clone(), sin_buf)
 }
 
+/// Given a set of Fourier coefficients and the corresponding set of sinus
+/// harmonics, synthesize an odd band-limited signal, such as a saw
+fn synthesize_odd_signal(fourier_coefficients: &[f64], sinus_harmonics: &[f64]) -> AudioSample {
+    // Teach the compiler that input buffers have the same size
+    let num_harmonics = fourier_coefficients.len();
+    let fourier_coefficients = &fourier_coefficients[..num_harmonics];
+    let sinus_harmonics = &sinus_harmonics[..num_harmonics];
+
+    // Perform signal synthesis in a manner which is amenable to automatic
+    // vectorization by the compiler
+    const NUM_ACCUMULATORS: usize = 1 << 6;
+    let mut accumulators = [0.0; NUM_ACCUMULATORS];
+    for (sins, coeffs) in sinus_harmonics
+        .chunks(NUM_ACCUMULATORS)
+        .zip(fourier_coefficients.chunks(NUM_ACCUMULATORS))
+    {
+        for (accumulator, (&sin, &coeff)) in
+            accumulators.iter_mut().zip(sins.iter().zip(coeffs.iter()))
+        {
+            *accumulator += sin * coeff;
+        }
+    }
+    let mut num_accumulators = NUM_ACCUMULATORS;
+    while num_accumulators > 1 {
+        num_accumulators /= 2;
+        for i in 0..num_accumulators {
+            accumulators[i] += accumulators[i + num_accumulators];
+        }
+    }
+    accumulators[0] as _
+}
+
 /// Variant of the InvMulSaw algorithm that uses an FFT-style harmonics
 /// generation algorithm for extra precision and speed.
 pub struct SmartHarmonicsSaw {
@@ -308,37 +340,18 @@ impl Iterator for SmartHarmonicsSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
-
-        // Compute harmonics using an FFT-like algorithm
+        // Teach the compiler that all our internal buffers have the same size
         let num_harmonics = self.fourier_coefficients.len();
+        let fourier_coefficients = &self.fourier_coefficients[..num_harmonics];
         let sin_buf = &mut self.sincos_buffer.0[..num_harmonics];
         let cos_buf = &mut self.sincos_buffer.1[..num_harmonics];
+
+        // Compute harmonics using an FFT-like algorithm
+        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         synthesis::sincos_harmonics_smart(phase.sin_cos(), (sin_buf, cos_buf));
 
         // Accumulate the saw signal in a way which the compiler can vectorize
-        const NUM_ACCUMULATORS: usize = 1 << 6;
-        let mut accumulators = [0.0; NUM_ACCUMULATORS];
-        for (sins, coeffs) in sin_buf
-            .chunks(NUM_ACCUMULATORS)
-            .zip(self.fourier_coefficients.chunks(NUM_ACCUMULATORS))
-        {
-            for (accumulator, (&sin, &coeff)) in
-                accumulators.iter_mut().zip(sins.iter().zip(coeffs.iter()))
-            {
-                *accumulator += sin * coeff;
-            }
-        }
-        let mut num_accumulators = NUM_ACCUMULATORS;
-        while num_accumulators > 1 {
-            num_accumulators /= 2;
-            for i in 0..num_accumulators {
-                accumulators[i] += accumulators[i + num_accumulators];
-            }
-        }
-        let result: f64 = accumulators[0];
-
-        Some(result as _)
+        Some(synthesize_odd_signal(fourier_coefficients, sin_buf))
     }
 }
 
@@ -410,6 +423,14 @@ impl Iterator for FullyIterativeSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Teach the compiler that all our internal buffers have the same size
+        let num_harmonics = self.fourier_coefficients.len();
+        let fourier_coefficients = &self.fourier_coefficients[..num_harmonics];
+        let sin_phase_harmonics = &mut self.sincos_phase_harmonics.0[..num_harmonics];
+        let cos_phase_harmonics = &mut self.sincos_phase_harmonics.1[..num_harmonics];
+        let sin_dphi_harmonics = &mut self.sincos_dphi_harmonics.0[..num_harmonics];
+        let cos_dphi_harmonics = &mut self.sincos_dphi_harmonics.1[..num_harmonics];
+
         // Move all harmonics forward by a phase increment
         //
         // TODO: Add a method for generating multiple oscillator samples that
@@ -427,12 +448,6 @@ impl Iterator for FullyIterativeSaw {
         //       Also, I'll end up with 2D arrays, for which ndarray might be
         //       an appropriate tool.
         //
-        let num_harmonics = self.fourier_coefficients.len();
-        let fourier_coefficients = &self.fourier_coefficients[..num_harmonics];
-        let sin_phase_harmonics = &mut self.sincos_phase_harmonics.0[..num_harmonics];
-        let cos_phase_harmonics = &mut self.sincos_phase_harmonics.1[..num_harmonics];
-        let sin_dphi_harmonics = &mut self.sincos_dphi_harmonics.0[..num_harmonics];
-        let cos_dphi_harmonics = &mut self.sincos_dphi_harmonics.1[..num_harmonics];
         for harmonic in 0..num_harmonics {
             let new_sincos_phase = [
                 sin_phase_harmonics[harmonic] * cos_dphi_harmonics[harmonic]
@@ -445,28 +460,10 @@ impl Iterator for FullyIterativeSaw {
         }
 
         // Accumulate the saw signal in a SIMD-friendly way
-        const NUM_ACCUMULATORS: usize = 1 << 6;
-        let mut accumulators = [0.0; NUM_ACCUMULATORS];
-        for (sins, coeffs) in sin_phase_harmonics
-            .chunks(NUM_ACCUMULATORS)
-            .zip(fourier_coefficients.chunks(NUM_ACCUMULATORS))
-        {
-            for (accumulator, (&sin, &coeff)) in
-                accumulators.iter_mut().zip(sins.iter().zip(coeffs.iter()))
-            {
-                *accumulator += sin * coeff;
-            }
-        }
-        let mut num_accumulators = NUM_ACCUMULATORS;
-        while num_accumulators > 1 {
-            num_accumulators /= 2;
-            for i in 0..num_accumulators {
-                accumulators[i] += accumulators[i + num_accumulators];
-            }
-        }
-        let result: f64 = accumulators[0];
-
-        Some(result as _)
+        Some(synthesize_odd_signal(
+            fourier_coefficients,
+            sin_phase_harmonics,
+        ))
     }
 }
 

@@ -53,3 +53,7 @@ pub fn map_initial_error(
         AtomicU8::fetch_max,
     )
 }
+
+// TODO: Measure and map the number of iterations that it takes before a signal
+//       with cumulative error becomes different from its reference by more than
+//       N bits of error.

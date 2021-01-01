@@ -1,8 +1,9 @@
 //! Test utilities for studying differences between signals
 
-use crate::signal::Signal;
+use crate::{map::OscillatorMap, signal::Signal};
 use jigsaw::{AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, SamplingRateHz};
 use log::trace;
+use std::sync::atomic::AtomicU8;
 
 /// Measure how a signal differs from another, for a certain set of parameters
 /// and at a certain phase
@@ -32,4 +33,23 @@ pub fn measure_initial_error(
         error_bits
     );
     error_bits
+}
+
+/// Map the result of measure_initial_error across the parameter space
+pub fn map_initial_error(
+    signal: impl Signal + Send + Sync,
+    reference: impl Signal + Send + Sync,
+) -> OscillatorMap {
+    OscillatorMap::measure(
+        |sampling_rate, oscillator_freq, initial_phase| {
+            measure_initial_error(
+                &signal,
+                &reference,
+                sampling_rate,
+                oscillator_freq,
+                initial_phase,
+            )
+        },
+        AtomicU8::fetch_max,
+    )
 }

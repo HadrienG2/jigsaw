@@ -5,8 +5,9 @@ use crate::parameters::{
     NUM_RELATIVE_FREQ_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATE_RANGE,
 };
 use core::sync::atomic::{AtomicU8, Ordering};
-use jigsaw::{AudioFrequency, AudioPhase, SamplingRateHz};
+use jigsaw::{AudioFrequency, AudioPhase, AudioPhaseMod, SamplingRateHz};
 use log::debug;
+use plotters::prelude::*;
 use rand::Rng;
 use rayon::prelude::*;
 
@@ -144,4 +145,68 @@ impl OscillatorMapBucket<'_> {
     pub fn data(&self) -> u8 {
         self.map.buckets[self.linear_index]
     }
+}
+
+/// Given a recipe to build a map, build and plot it in such a way that failures
+/// to set up the plot will be reported right away, not after the lengthy
+/// process of acquiring the map's data.
+///
+/// Then forward the map to the caller, so that it can perform potentially
+/// panicking checks after the plot has been saved to disk.
+///
+pub fn map_and_plot(
+    map_recipe: impl FnOnce() -> OscillatorMap,
+    plot_filename: &str,
+    mut data_to_color: impl FnMut(u8) -> RGBColor,
+) -> Result<OscillatorMap, Box<dyn std::error::Error>> {
+    // Prepare to plot the error data
+    use AudioPhaseMod::consts::PI;
+    const X_MARGIN: u32 = 50;
+    const Y_MARGIN: u32 = 60;
+    const LABEL_SIZE: u32 = 20;
+    const NUM_X_LABELS: usize = 12;
+    const NUM_Y_LABELS: usize = 18;
+    let relative_freq_buckets = NUM_RELATIVE_FREQ_BUCKETS as u32;
+    let phase_buckets = NUM_PHASE_BUCKETS as u32;
+    let phase_range_in_pi = (PHASE_RANGE.start / PI)..(PHASE_RANGE.end / PI);
+    let root = BitMapBackend::new(
+        plot_filename,
+        (relative_freq_buckets + Y_MARGIN, phase_buckets + X_MARGIN),
+    )
+    .into_drawing_area();
+    root.fill(&WHITE)?;
+    let mut chart = ChartBuilder::on(&root)
+        .margin(0)
+        .x_label_area_size(X_MARGIN)
+        .y_label_area_size(Y_MARGIN)
+        .build_cartesian_2d(log2_relative_rate_range(), phase_range_in_pi)?;
+    chart
+        .configure_mesh()
+        .disable_mesh()
+        .label_style(("sans-serif", LABEL_SIZE))
+        .x_desc("Sampling rate / oscillator frequency")
+        .x_label_formatter(&|&log2_x| format!("{:.0}", (2.0f32).powf(log2_x)))
+        .x_labels(NUM_X_LABELS)
+        .y_desc("Phase in units of pi")
+        .y_labels(NUM_Y_LABELS)
+        .draw()?;
+    let plotting_area = chart.plotting_area();
+    assert_eq!(
+        plotting_area.dim_in_pixel(),
+        (relative_freq_buckets, phase_buckets)
+    );
+    let (base_x, base_y) = plotting_area.get_base_pixel();
+
+    // Map the error landscape
+    let error_map = map_recipe();
+
+    // Draw the error map
+    for bucket in error_map.iter() {
+        let color = data_to_color(bucket.data());
+        let (x_idx, y_idx) = bucket.index();
+        root.draw_pixel((x_idx as i32 + base_x, y_idx as i32 + base_y), &color)?;
+    }
+
+    // Bubble up the map to the caller
+    Ok(error_map)
 }

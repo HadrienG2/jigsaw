@@ -332,7 +332,7 @@ impl Iterator for SmartHarmonicsSaw {
             computed_harmonics *= 2;
         }
 
-        // Accumulate the saw signal in a way which the compiler can autovectorize
+        // Accumulate the saw signal in a way which the compiler can vectorize
         const NUM_ACCUMULATORS: usize = 64;
         let mut accumulators = [0.0; NUM_ACCUMULATORS];
         for (sins, coeffs) in sin_buf

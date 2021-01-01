@@ -367,14 +367,14 @@ impl Iterator for SmartHarmonicsSaw {
 /// automatic reset procedure that prevents it from happening.
 ///
 pub struct FullyIterativeSaw {
-    // (sin, cos) of the underlying phase increment
-    sincos_dphi: [f64; 2],
+    // Buffers to store the sines and cosines of harmonics
+    sincos_phase_harmonics: (Box<[f64]>, Box<[f64]>),
+
+    // (sin, cos) of the underlying phase increment and its harmonics
+    sincos_dphi_harmonics: (Box<[f64]>, Box<[f64]>),
 
     // Fourier coefficients of harmonics 1 and above
     fourier_coefficients: Box<[f64]>,
-
-    // Storage for the sines and cosines of the fundamental and harmonics
-    sincos_buf: [Box<[f64]>; 2],
 }
 //
 impl Oscillator for FullyIterativeSaw {
@@ -395,34 +395,31 @@ impl Oscillator for FullyIterativeSaw {
 
         // Set up storage for harmonics
         let sin_buf = vec![0.0; num_harmonics as usize].into_boxed_slice();
-        let mut sincos_buf = [sin_buf.clone(), sin_buf];
-
-        // Set up the infrastructure for synthesizing the fundamental sinus
+        let mut sincos_phase_harmonics = (sin_buf.clone(), sin_buf);
+        let mut sincos_dphi_harmonics = sincos_phase_harmonics.clone();
         let phase_increment = phase.phase_increment() as f64;
-        let (initial_sin, initial_cos) = (initial_phase as f64 - PI - phase_increment).sin_cos();
-        sincos_buf[0][0] = initial_sin;
-        sincos_buf[1][0] = initial_cos;
-        let sincos_dphi = phase_increment.sin_cos();
-        let sincos_dphi = [sincos_dphi.0, sincos_dphi.1];
+        let fundamental_phase = initial_phase as f64 - PI - phase_increment;
+        Self::compute_harmonics(fundamental_phase.sin_cos(), &mut sincos_phase_harmonics);
+        Self::compute_harmonics(phase_increment.sin_cos(), &mut sincos_dphi_harmonics);
 
         // Emit the output oscillator
         Self {
-            sincos_dphi,
+            sincos_phase_harmonics,
+            sincos_dphi_harmonics,
             fourier_coefficients,
-            sincos_buf,
         }
     }
 }
 //
 impl FullyIterativeSaw {
     /// Given a fundamentel sinus, compute its harmonics in an FFT-like way
-    fn compute_harmonics(&mut self, fundamental_sincos: [f64; 2]) {
-        let num_harmonics = self.fourier_coefficients.len();
-        let (sin_buf, cos_buf) = self.sincos_buf.split_at_mut(1);
-        let sin_buf = &mut sin_buf[0][..num_harmonics];
-        let cos_buf = &mut cos_buf[0][..num_harmonics];
-        sin_buf[0] = fundamental_sincos[0];
-        cos_buf[0] = fundamental_sincos[1];
+    fn compute_harmonics((sin, cos): (f64, f64), output: &mut (Box<[f64]>, Box<[f64]>)) {
+        let (sin_buf, cos_buf) = output;
+        let num_harmonics = sin_buf.len();
+        let sin_buf = &mut sin_buf[..num_harmonics];
+        let cos_buf = &mut cos_buf[..num_harmonics];
+        sin_buf[0] = sin;
+        cos_buf[0] = cos;
         let mut computed_harmonics = 1;
         while computed_harmonics < num_harmonics {
             let ref_cos = cos_buf[computed_harmonics - 1];
@@ -454,23 +451,30 @@ impl Iterator for FullyIterativeSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Move the fundamental sinus forward by a phase increment
-        let [prev_sin, prev_cos] = [self.sincos_buf[0][0], self.sincos_buf[1][0]];
-        let [sin_dphi, cos_dphi] = self.sincos_dphi;
-        let new_sincos = [
-            prev_sin * cos_dphi + prev_cos * sin_dphi,
-            prev_cos * cos_dphi - prev_sin * sin_dphi,
-        ];
-
-        // Compute the new harmonics
-        self.compute_harmonics(new_sincos);
+        // Move all harmonics forward by a phase increment
+        let num_harmonics = self.fourier_coefficients.len();
+        let fourier_coefficients = &self.fourier_coefficients[..num_harmonics];
+        let sin_phase_harmonics = &mut self.sincos_phase_harmonics.0[..num_harmonics];
+        let cos_phase_harmonics = &mut self.sincos_phase_harmonics.1[..num_harmonics];
+        let sin_dphi_harmonics = &mut self.sincos_dphi_harmonics.0[..num_harmonics];
+        let cos_dphi_harmonics = &mut self.sincos_dphi_harmonics.1[..num_harmonics];
+        for harmonic in 0..num_harmonics {
+            let new_sincos_phase = [
+                sin_phase_harmonics[harmonic] * cos_dphi_harmonics[harmonic]
+                    + cos_phase_harmonics[harmonic] * sin_dphi_harmonics[harmonic],
+                cos_phase_harmonics[harmonic] * cos_dphi_harmonics[harmonic]
+                    - sin_phase_harmonics[harmonic] * sin_dphi_harmonics[harmonic],
+            ];
+            sin_phase_harmonics[harmonic] = new_sincos_phase[0];
+            cos_phase_harmonics[harmonic] = new_sincos_phase[1];
+        }
 
         // Accumulate the saw signal in a SIMD-friendly way
         const NUM_ACCUMULATORS: usize = 1 << 6;
         let mut accumulators = [0.0; NUM_ACCUMULATORS];
-        for (sins, coeffs) in self.sincos_buf[0]
+        for (sins, coeffs) in sin_phase_harmonics
             .chunks(NUM_ACCUMULATORS)
-            .zip(self.fourier_coefficients.chunks(NUM_ACCUMULATORS))
+            .zip(fourier_coefficients.chunks(NUM_ACCUMULATORS))
         {
             for (accumulator, (&sin, &coeff)) in
                 accumulators.iter_mut().zip(sins.iter().zip(coeffs.iter()))

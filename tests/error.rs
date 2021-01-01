@@ -1,16 +1,14 @@
-//! Test utilities for studying errors
-
-mod signal;
+//! Test utilities for studying differences between signals
 
 use crate::signal::Signal;
 use jigsaw::{AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, SamplingRateHz};
 use log::trace;
 
-/// Number of bits of error from an unlimited signal to its band-limited cousin
+/// Number of bits of error from a signal to another
 pub type ErrorBits = u8;
 
-/// Measure how the reference saw differs from the band-unlimited saw, for a
-/// certain set of parameters and at a certain phase
+/// Measure how a signal differs from another, for a certain set of parameters
+/// and at a certain phase
 pub fn measure_error(
     signal: &impl Signal,
     reference: &impl Signal,

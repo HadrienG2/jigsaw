@@ -16,8 +16,8 @@ use rand::Rng;
 
 #[test]
 #[ignore]
-/// Compare the optimized saw to the reference saw
-fn compare_saws() {
+/// Compare all saw implementations at a random point of the parameter space
+fn compare_random_saws() {
     logger::init_logger();
     let mut rng = rand::thread_rng();
     let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);

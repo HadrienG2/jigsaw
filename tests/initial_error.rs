@@ -4,7 +4,7 @@
 mod error;
 mod logger;
 mod parameters;
-mod signal;
+pub mod signal;
 
 use crate::{
     error::{measure_error, ErrorBits},
@@ -25,20 +25,20 @@ use rand::Rng;
 use rayon::prelude::*;
 
 /// Map of the error of the reference saw vs the band-unlimited saw
-struct ErrorMap {
+struct InitialErrorMap {
     /// Map buckets in phase-major order
     error_buckets: Vec<ErrorBits>,
 }
 //
-struct ErrorMapBucket<'error_map> {
+struct InitialErrorMapBucket<'error_map> {
     /// Underlying ErrorMap
-    error_map: &'error_map ErrorMap,
+    error_map: &'error_map InitialErrorMap,
 
     /// Index of the bucket within the ErrorMap
     linear_index: usize,
 }
 //
-impl ErrorMap {
+impl InitialErrorMap {
     /// Measure the error across the parameter space and build an error map
     fn measure(signal: impl Signal + Send + Sync, reference: impl Signal + Send + Sync) -> Self {
         // Set up a bucket-filling infrastructure
@@ -104,15 +104,15 @@ impl ErrorMap {
     }
 
     /// Iterate over the buckets of the error map
-    fn iter(&self) -> impl Iterator<Item = ErrorMapBucket> {
-        (0..self.error_buckets.len()).map(move |linear_index| ErrorMapBucket {
+    fn iter(&self) -> impl Iterator<Item = InitialErrorMapBucket> {
+        (0..self.error_buckets.len()).map(move |linear_index| InitialErrorMapBucket {
             error_map: self,
             linear_index,
         })
     }
 }
 //
-impl ErrorMapBucket<'_> {
+impl InitialErrorMapBucket<'_> {
     /// 2D bucket index
     ///
     /// Both indices are zero-based, the first index represents the sampling
@@ -153,7 +153,7 @@ impl ErrorMapBucket<'_> {
         relative_rate_bucket += 1;
         phase_bucket += 1;
         let linear_index = relative_rate_bucket * NUM_PHASE_BUCKETS + phase_bucket;
-        ErrorMapBucket {
+        InitialErrorMapBucket {
             error_map: self.error_map,
             linear_index,
         }
@@ -167,7 +167,7 @@ impl ErrorMapBucket<'_> {
 }
 
 /// Compare two implementations of a given signal
-fn plot_error(
+fn plot_initial_error(
     signal: impl Signal + Send + Sync,
     reference: impl Signal + Send + Sync,
     plot_filename: &str,
@@ -211,7 +211,7 @@ fn plot_error(
     let (base_x, base_y) = plotting_area.get_base_pixel();
 
     // Map the error landscape
-    let error_map = ErrorMap::measure(signal, reference);
+    let error_map = InitialErrorMap::measure(signal, reference);
 
     // Draw the error map
     trace!("Error(freq, phase) table is:");
@@ -242,10 +242,10 @@ fn plot_error(
 /// Compare the reference saw to a band-unlimited saw
 fn reference_vs_unlimited_saw() {
     init_logger();
-    plot_error(
+    plot_initial_error(
         BandLimitedSignal::<ReferenceSaw>::new(),
         UnlimitedSignal::new(jigsaw::unlimited_saw),
-        "reference_vs_unlimited_saw.png",
+        "initial_reference_vs_unlimited_saw.png",
     )
     .unwrap()
 }
@@ -255,10 +255,10 @@ fn reference_vs_unlimited_saw() {
 /// Compare the saw with single-precision sinus to the reference saw
 fn f32sin_vs_reference_saw() {
     init_logger();
-    plot_error(
+    plot_initial_error(
         BandLimitedSignal::<jigsaw::F32SinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "f32sin_vs_reference_saw.png",
+        "initial_f32sin_vs_reference_saw.png",
     )
     .unwrap()
 }
@@ -268,10 +268,10 @@ fn f32sin_vs_reference_saw() {
 /// Compare the saw with iterative sinus to the reference saw
 fn itersin_vs_reference_saw() {
     init_logger();
-    plot_error(
+    plot_initial_error(
         BandLimitedSignal::<jigsaw::IterativeSinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "itersin_vs_reference_saw.png",
+        "initial_itersin_vs_reference_saw.png",
     )
     .unwrap()
 }
@@ -281,10 +281,10 @@ fn itersin_vs_reference_saw() {
 /// Compare the saw with multiply-by-inverse to the reference saw
 fn invmul_vs_reference_saw() {
     init_logger();
-    plot_error(
+    plot_initial_error(
         BandLimitedSignal::<jigsaw::InvMulSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "invmul_vs_reference_saw.png",
+        "initial_invmul_vs_reference_saw.png",
     )
     .unwrap()
 }
@@ -295,10 +295,10 @@ fn invmul_vs_reference_saw() {
 /// to the reference saw
 fn smartharms_vs_reference_saw() {
     init_logger();
-    plot_error(
+    plot_initial_error(
         BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "smartharms_vs_reference_saw.png",
+        "initial_smartharms_vs_reference_saw.png",
     )
     .unwrap()
 }
@@ -309,10 +309,10 @@ fn smartharms_vs_reference_saw() {
 /// reference saw
 fn fullit_vs_reference_saw() {
     init_logger();
-    plot_error(
+    plot_initial_error(
         BandLimitedSignal::<jigsaw::FullyIterativeSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "fullit_vs_reference_saw.png",
+        "initial_fullit_vs_reference_saw.png",
     )
     .unwrap()
 }

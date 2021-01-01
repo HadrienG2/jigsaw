@@ -1,6 +1,6 @@
 //! Build and plot maps of some quantity across the oscillator parameter space
 
-use crate::parameters::{
+use super::parameters::{
     bucket_start, irregular_samples, log2_relative_rate_range, NUM_PHASE_BUCKETS,
     NUM_RELATIVE_FREQ_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATE_RANGE,
 };

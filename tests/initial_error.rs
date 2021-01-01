@@ -1,15 +1,9 @@
 //! This test studies the error of band-limited signals at their initial phase,
 //! both with respect to each other and to band-unlimited signals.
 
-mod error;
-mod logger;
-pub mod map;
-pub mod parameters;
-pub mod signal;
+mod shared;
 
-use crate::{
-    error::map_initial_error,
-    logger::init_logger,
+use crate::shared::{
     map::{map_and_plot, OscillatorMapBucket},
     signal::{BandLimitedSignal, Signal, UnlimitedSignal},
 };
@@ -25,7 +19,7 @@ fn plot_initial_error(
     mut error_check: impl FnMut(OscillatorMapBucket) -> bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Map the initial error, and plot it if requested to
-    let make_error_map = || map_initial_error(signal, reference);
+    let make_error_map = || shared::error::map_initial_error(signal, reference);
     let error_map = if let Some(plot_filename) = plot_filename {
         map_and_plot(make_error_map, plot_filename, |error| {
             let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
@@ -58,7 +52,7 @@ fn plot_initial_error(
 #[ignore]
 /// Compare the reference saw to a band-unlimited saw
 fn reference_vs_unlimited_saw() {
-    init_logger();
+    shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<ReferenceSaw>::new(),
         UnlimitedSignal::new(jigsaw::unlimited_saw),
@@ -72,7 +66,7 @@ fn reference_vs_unlimited_saw() {
 #[ignore]
 /// Compare the saw with single-precision sinus to the reference saw
 fn f32sin_vs_reference_saw() {
-    init_logger();
+    shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::F32SinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
@@ -86,7 +80,7 @@ fn f32sin_vs_reference_saw() {
 #[ignore]
 /// Compare the saw with iterative sinus to the reference saw
 fn itersin_vs_reference_saw() {
-    init_logger();
+    shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::IterativeSinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
@@ -100,7 +94,7 @@ fn itersin_vs_reference_saw() {
 #[ignore]
 /// Compare the saw with multiply-by-inverse to the reference saw
 fn invmul_vs_reference_saw() {
-    init_logger();
+    shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::InvMulSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
@@ -115,7 +109,7 @@ fn invmul_vs_reference_saw() {
 /// Compare the saw using a smart FFT-like harmonics computation method
 /// to the reference saw
 fn smartharms_vs_reference_saw() {
-    init_logger();
+    shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
@@ -130,7 +124,7 @@ fn smartharms_vs_reference_saw() {
 /// Compare the saw using a fully iterative harmonics computation method to the
 /// reference saw
 fn fullit_vs_reference_saw() {
-    init_logger();
+    shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::FullyIterativeSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),

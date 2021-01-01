@@ -1,6 +1,6 @@
 //! Test utilities for studying differences between signals
 
-use crate::{map::OscillatorMap, signal::Signal};
+use super::{map::OscillatorMap, signal::Signal};
 use jigsaw::{AudioFrequency, AudioPhase, AudioPhaseMod, AudioSample, SamplingRateHz};
 use log::trace;
 use std::sync::atomic::AtomicU8;

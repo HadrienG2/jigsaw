@@ -2,12 +2,11 @@
 //! fundamental sinus become erronerous and must be reset with a fresh exact
 //! sinus computation.
 
-mod logger;
-mod parameters;
+mod shared;
 
+use crate::shared::parameters::{OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATE_RANGE};
 use jigsaw::Oscillator;
 use log::trace;
-use parameters::{OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATE_RANGE};
 use rand::Rng;
 
 // TODO: Generalize by...
@@ -19,7 +18,7 @@ use rand::Rng;
 /// Compare the iterative saw to the reference, check after how many iterations
 /// it starts producing different results.
 fn search_cumulative_error_breakdown() {
-    logger::init_logger();
+    shared::logger::init_logger();
     let mut rng = rand::thread_rng();
     let sampling_rate = 44100 /* rng.gen_range(SAMPLING_RATE_RANGE) */;
     let oscillator_freq = 2000.0 /* rng.gen_range(OSCILLATOR_FREQ_RANGE) */;

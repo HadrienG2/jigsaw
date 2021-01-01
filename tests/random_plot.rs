@@ -1,11 +1,10 @@
 //! This integration test picks a random set of parameters and draws all
 //! versions of a signal for those parameters
 
-mod logger;
-mod parameters;
-mod signal;
+mod shared;
 
-use crate::{
+use crate::shared::{
+    logger::init_logger,
     parameters::{
         irregular_samples, NUM_PHASE_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE,
         SAMPLING_RATE_RANGE,
@@ -18,7 +17,7 @@ use rand::Rng;
 #[ignore]
 /// Compare all saw implementations at a random point of the parameter space
 fn compare_random_saws() {
-    logger::init_logger();
+    init_logger();
     let mut rng = rand::thread_rng();
     let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);
     let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);

@@ -1,11 +1,13 @@
-//! This test studies the error of band-limited signals, both with respect to
-//! each other and to band-unlimited signals.
+//! This test studies the error of band-limited signals at their initial phase,
+//! both with respect to each other and to band-unlimited signals.
 
+mod error;
 mod logger;
 mod parameters;
 mod signal;
 
 use crate::{
+    error::{measure_error, ErrorBits},
     logger::init_logger,
     parameters::{
         bucket_start, irregular_samples, log2_relative_rate_range, NUM_PHASE_BUCKETS,
@@ -21,39 +23,6 @@ use log::{debug, info, trace};
 use plotters::prelude::*;
 use rand::Rng;
 use rayon::prelude::*;
-
-/// Number of bits of error from an unlimited signal to its band-limited cousin
-type ErrorBits = u8;
-
-/// Measure how the reference saw differs from the band-unlimited saw, for a
-/// certain set of parameters and at a certain phase
-fn measure_error(
-    signal: &impl Signal,
-    reference: &impl Signal,
-    sampling_rate: SamplingRateHz,
-    oscillator_freq: AudioFrequency,
-    phase: AudioPhase,
-) -> ErrorBits {
-    trace!(
-        "Probing error at phase {} (= {}pi)",
-        phase,
-        phase / AudioPhaseMod::consts::PI
-    );
-    let signal = signal.measure(sampling_rate, oscillator_freq, phase);
-    let reference = reference.measure(sampling_rate, oscillator_freq, phase);
-    let difference = signal - reference;
-    let correct_bits = (-(difference.abs().log2()))
-        .floor()
-        .max(0.0)
-        .min(u8::MAX as AudioSample) as u8;
-    let error_bits = (AudioSample::MANTISSA_DIGITS as u8).saturating_sub(correct_bits);
-    trace!(
-        "Found a difference of {} ({} bits of error)",
-        difference,
-        error_bits
-    );
-    error_bits
-}
 
 /// Map of the error of the reference saw vs the band-unlimited saw
 struct ErrorMap {
@@ -203,9 +172,8 @@ fn plot_error(
     reference: impl Signal + Send + Sync,
     plot_filename: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use AudioPhaseMod::consts::PI;
-
     // Prepare to plot the error data
+    use AudioPhaseMod::consts::PI;
     const X_MARGIN: u32 = 50;
     const Y_MARGIN: u32 = 60;
     const LABEL_SIZE: u32 = 20;

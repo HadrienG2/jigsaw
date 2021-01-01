@@ -7,7 +7,7 @@ mod parameters;
 pub mod signal;
 
 use crate::{
-    error::{measure_error, ErrorBits},
+    error::measure_error,
     logger::init_logger,
     parameters::{
         bucket_start, irregular_samples, log2_relative_rate_range, NUM_PHASE_BUCKETS,
@@ -24,25 +24,28 @@ use plotters::prelude::*;
 use rand::Rng;
 use rayon::prelude::*;
 
-/// Map of the error of the reference saw vs the band-unlimited saw
-struct InitialErrorMap {
+/// Map of some quantity across the oscillator parameter space
+struct OscillatorMap {
     /// Map buckets in phase-major order
-    error_buckets: Vec<ErrorBits>,
+    buckets: Vec<u8>,
 }
 //
-struct InitialErrorMapBucket<'error_map> {
-    /// Underlying ErrorMap
-    error_map: &'error_map InitialErrorMap,
+struct OscillatorMapBucket<'oscillator_map> {
+    /// Underlying OscillatorMap
+    map: &'oscillator_map OscillatorMap,
 
-    /// Index of the bucket within the ErrorMap
+    /// Index of the bucket within the OscillatorMap
     linear_index: usize,
 }
 //
-impl InitialErrorMap {
-    /// Measure the error across the parameter space and build an error map
-    fn measure(signal: impl Signal + Send + Sync, reference: impl Signal + Send + Sync) -> Self {
+impl OscillatorMap {
+    /// Map a quantity across the oscillator parameter space
+    fn measure(
+        map: impl Fn(SamplingRateHz, AudioFrequency, AudioPhase) -> u8 + Send + Sync,
+        reduce: impl Fn(&AtomicU8, u8, Ordering) -> u8 + Send + Sync,
+    ) -> Self {
         // Set up a bucket-filling infrastructure
-        let error_buckets = std::iter::from_fn(|| Some(AtomicU8::new(0)))
+        let buckets = std::iter::from_fn(|| Some(AtomicU8::new(0)))
             .take(NUM_RELATIVE_FREQ_BUCKETS * NUM_PHASE_BUCKETS)
             .collect::<Vec<_>>();
 
@@ -71,24 +74,18 @@ impl InitialErrorMap {
                     let sampling_rate = rng.gen_range(min_sample_rate..=max_sample_rate);
                     let oscillator_freq = (sampling_rate as AudioFrequency) / relative_rate;
                     debug!(
-                        "Sampling a {} Hz saw at {} Hz (relative rate = {})",
+                        "Sampling a {} Hz signal at {} Hz (relative rate = {})",
                         oscillator_freq, sampling_rate, relative_rate,
                     );
 
-                    // Collect data about the oscillator's error for those parameters
+                    // Collect data about the oscillator for those parameters
                     for (phase_bucket, phases) in irregular_samples(PHASE_RANGE, NUM_PHASE_BUCKETS)
                     {
                         for phase in phases.iter().copied() {
-                            let error = measure_error(
-                                &signal,
-                                &reference,
-                                sampling_rate,
-                                oscillator_freq,
-                                phase,
-                            );
+                            let data = map(sampling_rate, oscillator_freq, phase);
                             let bucket_idx =
                                 relative_rate_bucket * NUM_PHASE_BUCKETS + phase_bucket;
-                            error_buckets[bucket_idx].fetch_max(error, Ordering::Relaxed);
+                            reduce(&buckets[bucket_idx], data, Ordering::Relaxed);
                         }
                     }
                 }
@@ -96,23 +93,20 @@ impl InitialErrorMap {
         );
 
         // De-atomify the buckets
-        let error_buckets = error_buckets
-            .into_iter()
-            .map(AtomicU8::into_inner)
-            .collect();
-        Self { error_buckets }
+        let buckets = buckets.into_iter().map(AtomicU8::into_inner).collect();
+        Self { buckets }
     }
 
-    /// Iterate over the buckets of the error map
-    fn iter(&self) -> impl Iterator<Item = InitialErrorMapBucket> {
-        (0..self.error_buckets.len()).map(move |linear_index| InitialErrorMapBucket {
-            error_map: self,
+    /// Iterate over the buckets of the map
+    fn iter(&self) -> impl Iterator<Item = OscillatorMapBucket> {
+        (0..self.buckets.len()).map(move |linear_index| OscillatorMapBucket {
+            map: self,
             linear_index,
         })
     }
 }
 //
-impl InitialErrorMapBucket<'_> {
+impl OscillatorMapBucket<'_> {
     /// 2D bucket index
     ///
     /// Both indices are zero-based, the first index represents the sampling
@@ -124,7 +118,7 @@ impl InitialErrorMapBucket<'_> {
         (relative_rate_bucket, phase_bucket)
     }
 
-    /// Top-left coordinate of the bucket in the error map
+    /// Top-left coordinate of the bucket in the map
     fn start(&self) -> (AudioFrequency, AudioPhase) {
         let (relative_rate_bucket, phase_bucket) = self.index();
         let log2_relative_rate = bucket_start(
@@ -147,22 +141,22 @@ impl InitialErrorMapBucket<'_> {
         )
     }
 
-    /// Bottom-right coordinate of the bucket in the error map
+    /// Bottom-right coordinate of the bucket in the map
     fn end(&self) -> (AudioFrequency, AudioPhase) {
         let (mut relative_rate_bucket, mut phase_bucket) = self.index();
         relative_rate_bucket += 1;
         phase_bucket += 1;
         let linear_index = relative_rate_bucket * NUM_PHASE_BUCKETS + phase_bucket;
-        InitialErrorMapBucket {
-            error_map: self.error_map,
+        OscillatorMapBucket {
+            map: self.map,
             linear_index,
         }
         .start()
     }
 
-    /// Measured error within that bucket
-    fn error(&self) -> ErrorBits {
-        self.error_map.error_buckets[self.linear_index]
+    /// Measured data within that bucket
+    fn data(&self) -> u8 {
+        self.map.buckets[self.linear_index]
     }
 }
 
@@ -211,16 +205,27 @@ fn plot_initial_error(
     let (base_x, base_y) = plotting_area.get_base_pixel();
 
     // Map the error landscape
-    let error_map = InitialErrorMap::measure(signal, reference);
+    let error_map = OscillatorMap::measure(
+        |sampling_rate, oscillator_freq, initial_phase| {
+            measure_error(
+                &signal,
+                &reference,
+                sampling_rate,
+                oscillator_freq,
+                initial_phase,
+            )
+        },
+        AtomicU8::fetch_max,
+    );
 
     // Draw the error map
-    trace!("Error(freq, phase) table is:");
+    trace!("Error(relfreq, phase) table is:");
     trace!("relrate,phase,error");
     let mut max_error = 0;
     for bucket in error_map.iter() {
         // Check out the current error map bucket
         // FIXME: For this to become a real test, we should also inspect the error
-        let error = bucket.error();
+        let error = bucket.data();
         max_error = max_error.max(error);
         let (relative_rate, phase) = bucket.center();
         trace!("{},{},{}", relative_rate, phase, error);

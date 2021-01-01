@@ -413,8 +413,10 @@ impl Oscillator for FullyIterativeSaw {
 //
 impl FullyIterativeSaw {
     /// Given a fundamentel sinus, compute its harmonics in an FFT-like way
-    fn compute_harmonics((sin, cos): (f64, f64), output: &mut (Box<[f64]>, Box<[f64]>)) {
-        let (sin_buf, cos_buf) = output;
+    fn compute_harmonics(
+        (sin, cos): (f64, f64),
+        (sin_buf, cos_buf): &mut (Box<[f64]>, Box<[f64]>),
+    ) {
         let num_harmonics = sin_buf.len();
         let sin_buf = &mut sin_buf[..num_harmonics];
         let cos_buf = &mut cos_buf[..num_harmonics];

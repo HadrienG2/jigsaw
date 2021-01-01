@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 log = "0.4"
 more-asserts = "0.2"
+num-traits = "0.2"
 
 [dev-dependencies]
 criterion = "0.3"

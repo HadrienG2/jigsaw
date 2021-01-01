@@ -2,6 +2,7 @@
 
 use crate::{audio, AudioFrequency, AudioPhase, AudioSample, SamplingRateHz};
 use more_asserts::*;
+use num_traits::{cast, Float};
 
 /// Type suitable for storing oscillator harmonics
 //
@@ -44,6 +45,93 @@ pub(crate) fn check_harmonics_precision(num_harmonics: HarmonicsCounter, mantiss
             (2 as HarmonicsCounter).pow(mantissa_bits),
             "Too many harmonics to accurately represent them as floating-point",
         );
+    }
+}
+
+/// Given a fundamental sinus' phase, compute the value of all of its (sin, cos)
+/// harmonics up to a certain rank with maximal precision.
+///
+/// You can pick the precision in which the harmonics will be computed, but f64
+/// will be slow, and f32 won't be much faster and will be too imprecise.
+///
+/// This is where the following harmonics computation methods come in.
+///
+pub(crate) fn harmonics_precise<F: Float>(
+    phase: f64,
+    num_harmonics: HarmonicsCounter,
+) -> impl Iterator<Item = (f64, f64)> {
+    (1..=num_harmonics).map(move |harmonic| {
+        let phase = cast::<f64, F>(harmonic as f64 * phase).unwrap();
+        let (sin, cos) = phase.sin_cos();
+        (cast(sin).unwrap(), cast(cos).unwrap())
+    })
+}
+
+/// Given a fundamental sin/cos pair, compute the value of all of its (sin, cos)
+/// harmonics using an iterative approach based on the
+/// sincos((n+1)x) = f(sincos(nx)) trigonometric identities.
+///
+/// This approach doesn't use more memory than the naive approach, but is not
+/// super precise and will break down relatively quickly as num_harmonics goes
+/// up. It is only viable because we have to compute at twice the precision of
+/// the desired result for accumulation error reasons.
+///
+/// Also, it doesn't vectorize as well as the following approach.
+///
+pub(crate) fn harmonics_iterative(
+    (sin_1, cos_1): (f64, f64),
+    num_harmonics: HarmonicsCounter,
+) -> impl Iterator<Item = (f64, f64)> {
+    let (mut sin_n, mut cos_n) = (0.0, 1.0);
+    std::iter::from_fn(move || {
+        let (sin, cos) = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
+        sin_n = sin;
+        cos_n = cos;
+        Some((sin, cos))
+    })
+    .take(num_harmonics as usize)
+}
+
+/// Given a fundamental sin/cos pair, compute the value of all of its (sin, cos)
+/// harmonics using a recursive approach inspired by the FFT algorithm.
+///
+/// This approach requires a storage buffer for num_harmonics (sin, cos) pairs,
+/// but it is more precise than the previous one (each harmonic is a sum of only
+/// O(log2(num_harmonics)) terms, not O(num_harmonics) terms) and vectorizes
+/// very well so as long as the buffer fits in the L1 cache it will be faster.
+///
+pub(crate) fn harmonics_smart(
+    (sin_1, cos_1): (f64, f64),
+    (sin_buf, cos_buf): (&mut [f64], &mut [f64]),
+) {
+    let num_harmonics = sin_buf.len();
+    let sin_buf = &mut sin_buf[..num_harmonics];
+    let cos_buf = &mut cos_buf[..num_harmonics];
+    sin_buf[0] = sin_1;
+    cos_buf[0] = cos_1;
+    let mut computed_harmonics = 1;
+    while computed_harmonics < num_harmonics {
+        let ref_cos = cos_buf[computed_harmonics - 1];
+        let ref_sin = sin_buf[computed_harmonics - 1];
+        let remaining_harmonics = num_harmonics - computed_harmonics;
+        let incoming_harmonics = computed_harmonics.min(remaining_harmonics);
+        for old_harmonic in 0..incoming_harmonics {
+            let new_harmonic = old_harmonic + computed_harmonics;
+            // Safety: This is safe because by construction, neither
+            //         old_harmonic not new_harmonic can go above
+            //         num_harmonics. It is necessary because right now,
+            //         rustc's bound check elision is not smart enough and
+            //         kills autovectorization, which is unacceptable.
+            unsafe {
+                *sin_buf.get_unchecked_mut(new_harmonic) = sin_buf.get_unchecked(old_harmonic)
+                    * ref_cos
+                    + cos_buf.get_unchecked(old_harmonic) * ref_sin;
+                *cos_buf.get_unchecked_mut(new_harmonic) = cos_buf.get_unchecked(old_harmonic)
+                    * ref_cos
+                    - sin_buf.get_unchecked(old_harmonic) * ref_sin;
+            }
+        }
+        computed_harmonics *= 2;
     }
 }
 
@@ -135,4 +223,6 @@ mod tests {
             true
         }
     }
+
+    // TODO: Test harmonics computations
 }

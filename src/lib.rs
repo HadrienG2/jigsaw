@@ -5,7 +5,6 @@ mod synthesis;
 pub(crate) mod test_tools;
 
 use crate::synthesis::HarmonicsCounter;
-use log::trace;
 
 pub use crate::{
     audio::{AudioFrequency, AudioSample, SamplingRateHz, MAX_SAMPLING_RATE, MIN_SAMPLING_RATE},
@@ -18,9 +17,6 @@ pub use crate::phase::OscillatorPhase;
 #[cfg(test)]
 pub use crate::phase::OscillatorPhase;
 
-/// Display diagnostic information about wave harmonics generation
-const HARMONICS_DIAGNOSTICS: bool = false;
-
 // === SAW GENERATORS ===
 
 /// Sawtooth wave without band limiting
@@ -31,6 +27,7 @@ const HARMONICS_DIAGNOSTICS: bool = false;
 ///
 /// However, this waveform can be used for validation purposes, that's what the
 /// band_limiting_error integration test does.
+///
 pub fn unlimited_saw(phase: AudioPhase) -> AudioSample {
     use AudioPhaseMod::consts::{PI, TAU};
     (phase + PI).rem_euclid(TAU) / PI - 1.0
@@ -39,6 +36,7 @@ pub fn unlimited_saw(phase: AudioPhase) -> AudioSample {
 /// Common setup for any band-limited sawtooth wave generator
 ///
 /// Returns a suitable phase generator and the number of harmonics to be generated
+///
 fn setup_saw(
     sampling_rate: SamplingRateHz,
     oscillator_freq: AudioFrequency,
@@ -65,6 +63,7 @@ fn setup_saw(
 /// This computes a band-limited sawtooth wave with maximal precision, at the
 /// cost of speed. It is intended as a speed and precision reference against
 /// which other speed-optimized sawtooth wave generators can be compared
+///
 pub struct ReferenceSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
@@ -94,9 +93,10 @@ impl Iterator for ReferenceSaw {
     fn next(&mut self) -> Option<Self::Item> {
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let mut accumulator = 0.0;
-        for harmonic in 1..=self.num_harmonics {
-            let harmonic = harmonic as f64;
-            accumulator -= (harmonic * phase).sin() / harmonic;
+        for (idx, (sin, _cos)) in
+            synthesis::harmonics_precise::<f64>(phase, self.num_harmonics).enumerate()
+        {
+            accumulator -= sin / ((idx + 1) as f64);
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)
@@ -108,6 +108,7 @@ impl Iterator for ReferenceSaw {
 /// This variation is about 30% faster, but it loses 10 bits of precision,
 /// which means that the result would be distinguishable from that of the
 /// ReferenceSaw in a 16-bit CD recording. That seems unacceptable.
+///
 pub struct F32SinSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
@@ -137,9 +138,10 @@ impl Iterator for F32SinSaw {
     fn next(&mut self) -> Option<Self::Item> {
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
         let mut accumulator = 0.0;
-        for harmonic in 1..=self.num_harmonics {
-            let harmonic = harmonic as f64;
-            accumulator -= ((harmonic * phase) as f32).sin() as f64 / harmonic;
+        for (idx, (sin, _cos)) in
+            synthesis::harmonics_precise::<f32>(phase, self.num_harmonics).enumerate()
+        {
+            accumulator -= sin / ((idx + 1) as f64);
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)
@@ -152,11 +154,6 @@ impl Iterator for F32SinSaw {
 /// This algorithm produces identical results to the ReferenceSaw, but about 3x
 /// faster in scenarios where its performance is bottlenecked by harmonics
 /// generation (such as sampling a 20 Hz sinus at 192 kHz).
-///
-/// Note that if need be, there is headroom for precision improvements in the
-/// intermediate computations, by using a more sophisticated FFT-style harmonics
-/// generation harmonics that also leverages the sin(2x) and cos(2x)
-/// trigonometric identities.
 ///
 pub struct IterativeSinSaw {
     // Underlying oscillator phase iterator
@@ -186,25 +183,11 @@ impl Iterator for IterativeSinSaw {
 
     fn next(&mut self) -> Option<Self::Item> {
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
-        let (sin_1, cos_1) = phase.sin_cos();
-        let mut sincos_n = (sin_1, cos_1);
-        let mut accumulator = -sin_1;
-        for harmonic in 2..=self.num_harmonics {
-            let harmonic = harmonic as f64;
-            let (sin_n, cos_n) = sincos_n;
-            sincos_n = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
-            accumulator -= sincos_n.0 / harmonic;
-            if HARMONICS_DIAGNOSTICS {
-                let error = sin_n - (harmonic * phase).sin();
-                let good_bits = (-error.abs().log2()).floor().max(0.0).min(u32::MAX as f64) as u32;
-                let error_bits = f64::MANTISSA_DIGITS.saturating_sub(good_bits);
-                trace!(
-                    "f64 error on harmonic {} is {} ({} bits)",
-                    harmonic,
-                    error,
-                    error_bits
-                );
-            }
+        let mut accumulator = 0.0;
+        for (idx, (sin, _cos)) in
+            synthesis::harmonics_iterative(phase.sin_cos(), self.num_harmonics).enumerate()
+        {
+            accumulator -= sin / ((idx + 1) as f64);
         }
         accumulator /= std::f64::consts::FRAC_PI_2;
         Some(accumulator as _)
@@ -245,21 +228,24 @@ impl Iterator for InvMulSaw {
 
     fn next(&mut self) -> Option<Self::Item> {
         let phase = self.phase.next()? as f64 - std::f64::consts::PI;
-        let (sin_1, cos_1) = phase.sin_cos();
-        let mut sincos_n = (sin_1, cos_1);
         let mut accumulator = 0.0;
-        for fourier_coeff in self.fourier_coefficients.iter().copied() {
-            accumulator += sincos_n.0 * fourier_coeff;
-            let (sin_n, cos_n) = sincos_n;
-            sincos_n = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
+        let num_harmonics = self.fourier_coefficients.len() as HarmonicsCounter;
+        for (&coeff, (sin, _cos)) in
+            self.fourier_coefficients
+                .iter()
+                .zip(synthesis::harmonics_iterative(
+                    phase.sin_cos(),
+                    num_harmonics,
+                ))
+        {
+            accumulator += coeff * sin;
         }
         Some(accumulator as _)
     }
 }
 
 /// Variant of the InvMulSaw algorithm that uses an FFT-style harmonics
-/// generation algorithm on the ground that in addition to its precision
-/// benefits, it might be more vectorizable
+/// generation algorithm for extra precision and speed.
 pub struct SmartHarmonicsSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,
@@ -268,7 +254,7 @@ pub struct SmartHarmonicsSaw {
     fourier_coefficients: Box<[f64]>,
 
     // Buffers to store the sines and cosines of Fourier coefficients
-    sincos_buf: [Box<[f64]>; 2],
+    sincos_buf: (Box<[f64]>, Box<[f64]>),
 }
 //
 impl Oscillator for SmartHarmonicsSaw {
@@ -284,7 +270,7 @@ impl Oscillator for SmartHarmonicsSaw {
             .map(|harmonic| -1.0 / (harmonic as f64 * FRAC_PI_2))
             .collect();
         let sin_buf = vec![0.0; num_harmonics as usize].into_boxed_slice();
-        let sincos_buf = [sin_buf.clone(), sin_buf];
+        let sincos_buf = (sin_buf.clone(), sin_buf);
         Self {
             phase,
             fourier_coefficients,
@@ -301,36 +287,9 @@ impl Iterator for SmartHarmonicsSaw {
 
         // Compute harmonics using an FFT-like algorithm
         let num_harmonics = self.fourier_coefficients.len();
-        let (sin_buf, cos_buf) = self.sincos_buf.split_at_mut(1);
-        let sin_buf = &mut sin_buf[0][..num_harmonics];
-        let cos_buf = &mut cos_buf[0][..num_harmonics];
-        let (sin_1, cos_1) = phase.sin_cos();
-        sin_buf[0] = sin_1;
-        cos_buf[0] = cos_1;
-        let mut computed_harmonics = 1;
-        while computed_harmonics < num_harmonics {
-            let ref_cos = cos_buf[computed_harmonics - 1];
-            let ref_sin = sin_buf[computed_harmonics - 1];
-            let remaining_harmonics = num_harmonics - computed_harmonics;
-            let incoming_harmonics = computed_harmonics.min(remaining_harmonics);
-            for old_harmonic in 0..incoming_harmonics {
-                let new_harmonic = old_harmonic + computed_harmonics;
-                // Safety: This is safe because by construction, neither
-                //         old_harmonic not new_harmonic can go above
-                //         num_harmonics. It is necessary because right now,
-                //         rustc's bound check elision is not smart enough and
-                //         kills autovectorization, which is unacceptable.
-                unsafe {
-                    *sin_buf.get_unchecked_mut(new_harmonic) = sin_buf.get_unchecked(old_harmonic)
-                        * ref_cos
-                        + cos_buf.get_unchecked(old_harmonic) * ref_sin;
-                    *cos_buf.get_unchecked_mut(new_harmonic) = cos_buf.get_unchecked(old_harmonic)
-                        * ref_cos
-                        - sin_buf.get_unchecked(old_harmonic) * ref_sin;
-                }
-            }
-            computed_harmonics *= 2;
-        }
+        let sin_buf = &mut self.sincos_buf.0[..num_harmonics];
+        let cos_buf = &mut self.sincos_buf.1[..num_harmonics];
+        synthesis::harmonics_smart(phase.sin_cos(), (sin_buf, cos_buf));
 
         // Accumulate the saw signal in a way which the compiler can vectorize
         const NUM_ACCUMULATORS: usize = 1 << 6;
@@ -398,67 +357,29 @@ impl Oscillator for FullyIterativeSaw {
         let mut sincos_phase_harmonics = (sin_buf.clone(), sin_buf);
         let mut sincos_dphi_harmonics = sincos_phase_harmonics.clone();
         let phase_increment = phase.phase_increment() as f64;
+
+        // Compute the harmonics of the fundamental and the phase increment
         let fundamental_phase = initial_phase as f64 - PI - phase_increment;
-        Self::compute_harmonics_approx(fundamental_phase.sin_cos(), &mut sincos_phase_harmonics);
-        Self::compute_harmonics_approx(phase_increment.sin_cos(), &mut sincos_dphi_harmonics);
+        synthesis::harmonics_smart(
+            fundamental_phase.sin_cos(),
+            (
+                &mut sincos_phase_harmonics.0[..],
+                &mut sincos_phase_harmonics.1[..],
+            ),
+        );
+        synthesis::harmonics_smart(
+            phase_increment.sin_cos(),
+            (
+                &mut sincos_dphi_harmonics.0[..],
+                &mut sincos_dphi_harmonics.1[..],
+            ),
+        );
 
         // Emit the output oscillator
         Self {
             sincos_phase_harmonics,
             sincos_dphi_harmonics,
             fourier_coefficients,
-        }
-    }
-}
-//
-impl FullyIterativeSaw {
-    /// Given a fundamental sinus' phase, compute its harmonics with maximal precision
-    fn compute_harmonics_of(phase: f64, (sin_buf, cos_buf): &mut (Box<[f64]>, Box<[f64]>)) {
-        let num_harmonics = sin_buf.len();
-        let sin_buf = &mut sin_buf[..num_harmonics];
-        let cos_buf = &mut cos_buf[..num_harmonics];
-        for (idx, (sin_phase, cos_phase)) in sin_buf.iter_mut().zip(cos_buf.iter_mut()).enumerate()
-        {
-            let harmonic = (idx + 1) as f64;
-            let sincos_phase = (harmonic * phase).sin_cos();
-            *sin_phase = sincos_phase.0;
-            *cos_phase = sincos_phase.1;
-        }
-    }
-
-    /// Given a fundamentel sinus, compute its harmonics in an FFT-like manner
-    fn compute_harmonics_approx(
-        (sin, cos): (f64, f64),
-        (sin_buf, cos_buf): &mut (Box<[f64]>, Box<[f64]>),
-    ) {
-        let num_harmonics = sin_buf.len();
-        let sin_buf = &mut sin_buf[..num_harmonics];
-        let cos_buf = &mut cos_buf[..num_harmonics];
-        sin_buf[0] = sin;
-        cos_buf[0] = cos;
-        let mut computed_harmonics = 1;
-        while computed_harmonics < num_harmonics {
-            let ref_cos = cos_buf[computed_harmonics - 1];
-            let ref_sin = sin_buf[computed_harmonics - 1];
-            let remaining_harmonics = num_harmonics - computed_harmonics;
-            let incoming_harmonics = computed_harmonics.min(remaining_harmonics);
-            for old_harmonic in 0..incoming_harmonics {
-                let new_harmonic = old_harmonic + computed_harmonics;
-                // Safety: This is safe because by construction, neither
-                //         old_harmonic not new_harmonic can go above
-                //         num_harmonics. It is necessary because right now,
-                //         rustc's bound check elision is not smart enough and
-                //         kills autovectorization, which is unacceptable.
-                unsafe {
-                    *sin_buf.get_unchecked_mut(new_harmonic) = sin_buf.get_unchecked(old_harmonic)
-                        * ref_cos
-                        + cos_buf.get_unchecked(old_harmonic) * ref_sin;
-                    *cos_buf.get_unchecked_mut(new_harmonic) = cos_buf.get_unchecked(old_harmonic)
-                        * ref_cos
-                        - sin_buf.get_unchecked(old_harmonic) * ref_sin;
-                }
-            }
-            computed_harmonics *= 2;
         }
     }
 }

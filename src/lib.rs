@@ -382,7 +382,6 @@ impl Oscillator for FullyIterativeSaw {
         initial_phase: AudioPhase,
     ) -> Self {
         // Do the basic setup that is common to all saw generator algorithms
-        use core::f64::consts::PI;
         let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
 
         // Compute the Fourier coefficients
@@ -394,7 +393,7 @@ impl Oscillator for FullyIterativeSaw {
         let phase_increment = phase.phase_increment() as f64;
 
         // Compute the harmonics of the fundamental and the phase increment
-        let fundamental_phase = initial_phase as f64 - PI;
+        let fundamental_phase = initial_phase as f64 - core::f64::consts::PI;
         synthesis::sincos_harmonics_smart(
             fundamental_phase.sin_cos(),
             (

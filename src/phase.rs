@@ -220,16 +220,8 @@ impl OscillatorPhase {
     }
 
     /// Tell what the phase increment is
-    pub fn phase_increment(
-        sampling_rate: SamplingRateHz,
-        oscillator_freq: AudioFrequency,
-    ) -> AudioPhase {
-        // Check that the input parameters make sense
-        audio::validate_sampling_rate(sampling_rate);
-        audio::validate_audio_frequency((sampling_rate, oscillator_freq));
-
-        // Compute the phase increment
-        AudioPhaseMod::consts::TAU * Self::relative_freq(sampling_rate, oscillator_freq)
+    pub fn phase_increment(&self) -> AudioPhase {
+        self.phase_increment
     }
 }
 

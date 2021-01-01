@@ -28,13 +28,14 @@ fn compare_saws() {
     let itersin = BandLimitedSignal::<jigsaw::IterativeSinSaw>::new();
     let invmul = BandLimitedSignal::<jigsaw::InvMulSaw>::new();
     let smartharms = BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new();
-    println!("phase,unlimited,reference,f32sin,itersin,invmul,smartharms");
+    let fullit = BandLimitedSignal::<jigsaw::FullyIterativeSaw>::new();
+    println!("phase,unlimited,reference,f32sin,itersin,invmul,smartharms,fullit");
     for (_phase_bucket_idx, phases) in irregular_samples(PHASE_RANGE, NUM_PHASE_BUCKETS) {
         // FIXME: Do the plot ourselves instead of printing CSV
         // FIXME: Turn this into a real test
         for phase in phases.iter().copied() {
             println!(
-                "{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{}",
                 phase,
                 unlimited.measure(sampling_rate, oscillator_freq, phase),
                 reference.measure(sampling_rate, oscillator_freq, phase),
@@ -42,6 +43,7 @@ fn compare_saws() {
                 itersin.measure(sampling_rate, oscillator_freq, phase),
                 invmul.measure(sampling_rate, oscillator_freq, phase),
                 smartharms.measure(sampling_rate, oscillator_freq, phase),
+                fullit.measure(sampling_rate, oscillator_freq, phase),
             );
         }
     }

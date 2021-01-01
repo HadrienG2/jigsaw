@@ -58,6 +58,25 @@ fn setup_saw(
     (phase, num_harmonics)
 }
 
+/// Given an algorithm to generate the harmonics of a sinus, compute a
+/// band-limited saw function with maximal precision
+fn precise_saw<Harmonics, HarmonicsGenerator>(
+    phase: AudioPhase,
+    sin_harmonics: HarmonicsGenerator,
+) -> AudioSample
+where
+    HarmonicsGenerator: FnOnce(f64) -> Harmonics,
+    Harmonics: Iterator<Item = f64>,
+{
+    let phase = phase as f64 - std::f64::consts::PI;
+    let mut accumulator = 0.0;
+    for (idx, sin) in sin_harmonics(phase).enumerate() {
+        accumulator -= sin / ((idx + 1) as f64);
+    }
+    accumulator /= std::f64::consts::FRAC_PI_2;
+    accumulator as _
+}
+
 /// Reference sawtooth generator
 ///
 /// This computes a band-limited sawtooth wave with maximal precision, at the
@@ -91,15 +110,12 @@ impl Iterator for ReferenceSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
-        let mut accumulator = 0.0;
-        for (idx, (sin, _cos)) in
-            synthesis::harmonics_precise::<f64>(phase, self.num_harmonics).enumerate()
-        {
-            accumulator -= sin / ((idx + 1) as f64);
-        }
-        accumulator /= std::f64::consts::FRAC_PI_2;
-        Some(accumulator as _)
+        self.phase.next().map(|phase| {
+            precise_saw(phase, |phase| {
+                synthesis::harmonics_precise::<f64>(phase, self.num_harmonics)
+                    .map(|(sin, _cos)| sin)
+            })
+        })
     }
 }
 
@@ -136,15 +152,12 @@ impl Iterator for F32SinSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
-        let mut accumulator = 0.0;
-        for (idx, (sin, _cos)) in
-            synthesis::harmonics_precise::<f32>(phase, self.num_harmonics).enumerate()
-        {
-            accumulator -= sin / ((idx + 1) as f64);
-        }
-        accumulator /= std::f64::consts::FRAC_PI_2;
-        Some(accumulator as _)
+        self.phase.next().map(|phase| {
+            precise_saw(phase, |phase| {
+                synthesis::harmonics_precise::<f32>(phase, self.num_harmonics)
+                    .map(|(sin, _cos)| sin)
+            })
+        })
     }
 }
 
@@ -182,15 +195,12 @@ impl Iterator for IterativeSinSaw {
     type Item = AudioSample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let phase = self.phase.next()? as f64 - std::f64::consts::PI;
-        let mut accumulator = 0.0;
-        for (idx, (sin, _cos)) in
-            synthesis::harmonics_iterative(phase.sin_cos(), self.num_harmonics).enumerate()
-        {
-            accumulator -= sin / ((idx + 1) as f64);
-        }
-        accumulator /= std::f64::consts::FRAC_PI_2;
-        Some(accumulator as _)
+        self.phase.next().map(|phase| {
+            precise_saw(phase, |phase| {
+                synthesis::harmonics_iterative(phase.sin_cos(), self.num_harmonics)
+                    .map(|(sin, _cos)| sin)
+            })
+        })
     }
 }
 

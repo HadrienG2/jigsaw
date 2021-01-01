@@ -4,9 +4,10 @@
 mod shared;
 
 use crate::shared::{
-    map::{map_and_plot, OscillatorMapBucket},
+    map::{map_and_plot, OscillatorMap, OscillatorMapBucket},
     signal::{BandLimitedSignal, Signal, UnlimitedSignal},
 };
+use core::sync::atomic::AtomicU8;
 use jigsaw::{AudioSample, ReferenceSaw};
 use log::{info, trace};
 use plotters::prelude::*;
@@ -19,12 +20,19 @@ fn plot_initial_error(
     mut error_check: impl FnMut(OscillatorMapBucket) -> bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Map the initial error, and plot it if requested to
-    let make_error_map = || shared::error::map_initial_error(signal, reference);
+    let make_error_map = || {
+        OscillatorMap::measure(
+            |sampling_rate, oscillator_freq, phase| {
+                let signal = signal.measure(sampling_rate, oscillator_freq, phase);
+                let reference = reference.measure(sampling_rate, oscillator_freq, phase);
+                let error_bits = shared::error::bits_of_error(signal, reference);
+                (error_bits as u32 * 255 / AudioSample::MANTISSA_DIGITS) as u8
+            },
+            AtomicU8::fetch_max,
+        )
+    };
     let error_map = if let Some(plot_filename) = plot_filename {
-        map_and_plot(make_error_map, plot_filename, |error| {
-            let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
-            RGBColor(scaled_error, 0, 0)
-        })?
+        map_and_plot(make_error_map, plot_filename, |error| RGBColor(error, 0, 0))?
     } else {
         make_error_map()
     };

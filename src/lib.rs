@@ -394,7 +394,7 @@ impl Oscillator for FullyIterativeSaw {
         let phase_increment = phase.phase_increment() as f64;
 
         // Compute the harmonics of the fundamental and the phase increment
-        let fundamental_phase = initial_phase as f64 - PI - phase_increment;
+        let fundamental_phase = initial_phase as f64 - PI;
         synthesis::sincos_harmonics_smart(
             fundamental_phase.sin_cos(),
             (
@@ -431,6 +431,9 @@ impl Iterator for FullyIterativeSaw {
         let sin_dphi_harmonics = &mut self.sincos_dphi_harmonics.0[..num_harmonics];
         let cos_dphi_harmonics = &mut self.sincos_dphi_harmonics.1[..num_harmonics];
 
+        // Accumulate the saw signal in a SIMD-friendly way
+        let result = synthesize_odd_signal(fourier_coefficients, sin_phase_harmonics);
+
         // Move all harmonics forward by a phase increment
         //
         // TODO: Add a method for generating multiple oscillator samples that
@@ -459,11 +462,8 @@ impl Iterator for FullyIterativeSaw {
             cos_phase_harmonics[harmonic] = new_sincos_phase[1];
         }
 
-        // Accumulate the saw signal in a SIMD-friendly way
-        Some(synthesize_odd_signal(
-            fourier_coefficients,
-            sin_phase_harmonics,
-        ))
+        // Emit the generated signal
+        Some(result)
     }
 }
 

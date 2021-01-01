@@ -1,18 +1,35 @@
 //! Common abstraction layer across band-limited and band-unlimited signals
 
 use core::marker::PhantomData;
-use jigsaw::{AudioFrequency, AudioPhase, AudioSample, Oscillator, SamplingRateHz};
+use jigsaw::{
+    AudioFrequency, AudioPhase, AudioSample, Oscillator, OscillatorPhase, SamplingRateHz,
+};
 
 /// Common trait to homogeneously handle the signal of band-limited oscillators
 /// and that of the underlying band-unlimited mathematical function
 pub trait Signal {
-    /// Measure the value of signal at a certain phase, for certain parameters
+    /// Iterator type which is produced when sampling this signal
+    type Iter: Iterator<Item = AudioSample>;
+
+    /// Start sampling a signal as an oscillator with certain parameters
+    fn sample(
+        &self,
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        initial_phase: AudioPhase,
+    ) -> Self::Iter;
+
+    /// Measure the value of a signal at a certain phase
     fn measure(
         &self,
         sampling_rate: SamplingRateHz,
         oscillator_freq: AudioFrequency,
         phase: AudioPhase,
-    ) -> AudioSample;
+    ) -> AudioSample {
+        self.sample(sampling_rate, oscillator_freq, phase)
+            .next()
+            .unwrap()
+    }
 }
 
 /// Signal implementation based on an Oscillator implementation
@@ -26,17 +43,15 @@ impl<Osc: Oscillator> BandLimitedSignal<Osc> {
 }
 //
 impl<Osc: Oscillator> Signal for BandLimitedSignal<Osc> {
-    /// Measure the signal of an oscillator configured for a certain operating
-    /// frequency and sampling rate, at a certain phase.
-    fn measure(
+    type Iter = Osc;
+
+    fn sample(
         &self,
         sampling_rate: SamplingRateHz,
         oscillator_freq: AudioFrequency,
-        phase: AudioPhase,
-    ) -> AudioSample {
-        Osc::new(sampling_rate, oscillator_freq, phase)
-            .next()
-            .unwrap()
+        initial_phase: AudioPhase,
+    ) -> Self::Iter {
+        Osc::new(sampling_rate, oscillator_freq, initial_phase)
     }
 }
 
@@ -50,14 +65,15 @@ impl<Sig: Fn(AudioPhase) -> AudioSample> UnlimitedSignal<Sig> {
     }
 }
 //
-impl<Sig: Fn(AudioPhase) -> AudioSample> Signal for UnlimitedSignal<Sig> {
-    //// Measure the mathematical function at a certain phase
-    fn measure(
+impl<Sig: Fn(AudioPhase) -> AudioSample + Clone> Signal for UnlimitedSignal<Sig> {
+    type Iter = std::iter::Map<OscillatorPhase, Sig>;
+
+    fn sample(
         &self,
-        _sampling_rate: SamplingRateHz,
-        _oscillator_freq: AudioFrequency,
-        phase: AudioPhase,
-    ) -> AudioSample {
-        (self.0)(phase)
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        initial_phase: AudioPhase,
+    ) -> Self::Iter {
+        OscillatorPhase::new(sampling_rate, oscillator_freq, initial_phase).map(self.0.clone())
     }
 }

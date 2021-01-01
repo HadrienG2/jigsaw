@@ -21,8 +21,8 @@ use rand::Rng;
 fn search_cumulative_error_breakdown() {
     logger::init_logger();
     let mut rng = rand::thread_rng();
-    let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);
-    let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
+    let sampling_rate = 44100 /* rng.gen_range(SAMPLING_RATE_RANGE) */;
+    let oscillator_freq = 2000.0 /* rng.gen_range(OSCILLATOR_FREQ_RANGE) */;
     let initial_phase = rng.gen_range(PHASE_RANGE);
     let reference = jigsaw::ReferenceSaw::new(sampling_rate, oscillator_freq, initial_phase);
     let fullit = jigsaw::FullyIterativeSaw::new(sampling_rate, oscillator_freq, initial_phase);
@@ -33,7 +33,9 @@ fn search_cumulative_error_breakdown() {
     let breakdown_iterations = reference
         .zip(fullit)
         .inspect(|(signal, reference)| trace!("Signal={}, reference={}", signal, reference))
-        .position(|(signal, reference)| signal != reference);
+        .position(|(signal, reference)| {
+            (signal - reference).abs() > (1 << 8) as f32 * f32::EPSILON
+        });
     println!(
         "Reached breakdown point after {:?} iterations",
         breakdown_iterations

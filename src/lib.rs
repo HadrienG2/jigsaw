@@ -399,8 +399,8 @@ impl Oscillator for FullyIterativeSaw {
         let mut sincos_dphi_harmonics = sincos_phase_harmonics.clone();
         let phase_increment = phase.phase_increment() as f64;
         let fundamental_phase = initial_phase as f64 - PI - phase_increment;
-        Self::compute_harmonics(fundamental_phase.sin_cos(), &mut sincos_phase_harmonics);
-        Self::compute_harmonics(phase_increment.sin_cos(), &mut sincos_dphi_harmonics);
+        Self::compute_harmonics_approx(fundamental_phase.sin_cos(), &mut sincos_phase_harmonics);
+        Self::compute_harmonics_approx(phase_increment.sin_cos(), &mut sincos_dphi_harmonics);
 
         // Emit the output oscillator
         Self {
@@ -412,8 +412,22 @@ impl Oscillator for FullyIterativeSaw {
 }
 //
 impl FullyIterativeSaw {
-    /// Given a fundamentel sinus, compute its harmonics in an FFT-like way
-    fn compute_harmonics(
+    /// Given a fundamental sinus' phase, compute its harmonics with maximal precision
+    fn compute_harmonics_of(phase: f64, (sin_buf, cos_buf): &mut (Box<[f64]>, Box<[f64]>)) {
+        let num_harmonics = sin_buf.len();
+        let sin_buf = &mut sin_buf[..num_harmonics];
+        let cos_buf = &mut cos_buf[..num_harmonics];
+        for (idx, (sin_phase, cos_phase)) in sin_buf.iter_mut().zip(cos_buf.iter_mut()).enumerate()
+        {
+            let harmonic = (idx + 1) as f64;
+            let sincos_phase = (harmonic * phase).sin_cos();
+            *sin_phase = sincos_phase.0;
+            *cos_phase = sincos_phase.1;
+        }
+    }
+
+    /// Given a fundamentel sinus, compute its harmonics in an FFT-like manner
+    fn compute_harmonics_approx(
         (sin, cos): (f64, f64),
         (sin_buf, cos_buf): &mut (Box<[f64]>, Box<[f64]>),
     ) {
@@ -454,6 +468,22 @@ impl Iterator for FullyIterativeSaw {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Move all harmonics forward by a phase increment
+        //
+        // TODO: Add a method for generating multiple oscillator samples that
+        //       uses an FFT-like approach instead of iteratively moving the
+        //       fundamental sine formward. This should be more precise, at the
+        //       cost of using more memory / bandwidth.
+        //
+        //       This could be done by reworking the Oscillator interface so
+        //       that it is parametrized by a number of samples, and emits
+        //       arrays of samples instead of individual samples.
+        //
+        //       The number of samples could probably be restricted to be a
+        //       power of 2, if need be. But I think we can do without.
+        //
+        //       Also, I'll end up with 2D arrays, for which ndarray might be
+        //       an appropriate tool.
+        //
         let num_harmonics = self.fourier_coefficients.len();
         let fourier_coefficients = &self.fourier_coefficients[..num_harmonics];
         let sin_phase_harmonics = &mut self.sincos_phase_harmonics.0[..num_harmonics];

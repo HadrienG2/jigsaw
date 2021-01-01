@@ -6,7 +6,7 @@ use log::trace;
 
 /// Measure how a signal differs from another, for a certain set of parameters
 /// and at a certain phase
-pub fn measure_error(
+pub fn measure_initial_error(
     signal: &impl Signal,
     reference: &impl Signal,
     sampling_rate: SamplingRateHz,

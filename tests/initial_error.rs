@@ -8,9 +8,9 @@ pub mod parameters;
 pub mod signal;
 
 use crate::{
-    error::measure_error,
+    error::measure_initial_error,
     logger::init_logger,
-    map::OscillatorMap,
+    map::{OscillatorMap, OscillatorMapBucket},
     parameters::{
         log2_relative_rate_range, NUM_PHASE_BUCKETS, NUM_RELATIVE_FREQ_BUCKETS, PHASE_RANGE,
     },
@@ -21,85 +21,108 @@ use jigsaw::{AudioPhaseMod, AudioSample, ReferenceSaw};
 use log::{info, trace};
 use plotters::prelude::*;
 
-/// Compare two implementations of a given signal
+/// Compare two implementations of a given signal and plot the difference
 fn plot_initial_error(
     signal: impl Signal + Send + Sync,
     reference: impl Signal + Send + Sync,
-    plot_filename: &str,
+    plot_filename: Option<&str>,
+    mut error_check: impl FnMut(OscillatorMapBucket) -> bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Prepare to plot the error data
-    use AudioPhaseMod::consts::PI;
-    const X_MARGIN: u32 = 50;
-    const Y_MARGIN: u32 = 60;
-    const LABEL_SIZE: u32 = 20;
-    const NUM_X_LABELS: usize = 12;
-    const NUM_Y_LABELS: usize = 18;
-    let relative_freq_buckets = NUM_RELATIVE_FREQ_BUCKETS as u32;
-    let phase_buckets = NUM_PHASE_BUCKETS as u32;
-    let phase_range_in_pi = (PHASE_RANGE.start / PI)..(PHASE_RANGE.end / PI);
-    let root = BitMapBackend::new(
-        plot_filename,
-        (relative_freq_buckets + Y_MARGIN, phase_buckets + X_MARGIN),
-    )
-    .into_drawing_area();
-    root.fill(&WHITE)?;
-    let mut chart = ChartBuilder::on(&root)
-        .margin(0)
-        .x_label_area_size(X_MARGIN)
-        .y_label_area_size(Y_MARGIN)
-        .build_cartesian_2d(log2_relative_rate_range(), phase_range_in_pi)?;
-    chart
-        .configure_mesh()
-        .disable_mesh()
-        .label_style(("sans-serif", LABEL_SIZE))
-        .x_desc("Sampling rate / oscillator frequency")
-        .x_label_formatter(&|&log2_x| format!("{:.0}", (2.0f32).powf(log2_x)))
-        .x_labels(NUM_X_LABELS)
-        .y_desc("Phase in units of pi")
-        .y_labels(NUM_Y_LABELS)
-        .draw()?;
-    let plotting_area = chart.plotting_area();
-    assert_eq!(
-        plotting_area.dim_in_pixel(),
-        (relative_freq_buckets, phase_buckets)
-    );
-    let (base_x, base_y) = plotting_area.get_base_pixel();
+    // Stuff which will always be done
+    let make_error_map = || {
+        OscillatorMap::measure(
+            |sampling_rate, oscillator_freq, initial_phase| {
+                measure_initial_error(
+                    &signal,
+                    &reference,
+                    sampling_rate,
+                    oscillator_freq,
+                    initial_phase,
+                )
+            },
+            AtomicU8::fetch_max,
+        )
+    };
+    let mut check_error_map = |error_map: OscillatorMap| {
+        trace!("Error(relfreq, phase) table is:");
+        trace!("relrate,phase,error");
+        let mut max_error = 0;
+        for bucket in error_map.iter() {
+            let error = bucket.data();
+            max_error = max_error.max(error);
+            let (relative_rate, phase) = bucket.center();
+            trace!("{},{},{}", relative_rate, phase, error);
+        }
+        info!("Maximum errror is {}", max_error);
+        error_map
+            .iter()
+            .for_each(|bucket| assert!(error_check(bucket)))
+    };
 
-    // Map the error landscape
-    let error_map = OscillatorMap::measure(
-        |sampling_rate, oscillator_freq, initial_phase| {
-            measure_error(
-                &signal,
-                &reference,
-                sampling_rate,
-                oscillator_freq,
-                initial_phase,
-            )
-        },
-        AtomicU8::fetch_max,
-    );
+    // Plot the error, if requested to
+    if let Some(plot_filename) = plot_filename {
+        // Prepare to plot the error data
+        use AudioPhaseMod::consts::PI;
+        const X_MARGIN: u32 = 50;
+        const Y_MARGIN: u32 = 60;
+        const LABEL_SIZE: u32 = 20;
+        const NUM_X_LABELS: usize = 12;
+        const NUM_Y_LABELS: usize = 18;
+        let relative_freq_buckets = NUM_RELATIVE_FREQ_BUCKETS as u32;
+        let phase_buckets = NUM_PHASE_BUCKETS as u32;
+        let phase_range_in_pi = (PHASE_RANGE.start / PI)..(PHASE_RANGE.end / PI);
+        let root = BitMapBackend::new(
+            plot_filename,
+            (relative_freq_buckets + Y_MARGIN, phase_buckets + X_MARGIN),
+        )
+        .into_drawing_area();
+        root.fill(&WHITE)?;
+        let mut chart = ChartBuilder::on(&root)
+            .margin(0)
+            .x_label_area_size(X_MARGIN)
+            .y_label_area_size(Y_MARGIN)
+            .build_cartesian_2d(log2_relative_rate_range(), phase_range_in_pi)?;
+        chart
+            .configure_mesh()
+            .disable_mesh()
+            .label_style(("sans-serif", LABEL_SIZE))
+            .x_desc("Sampling rate / oscillator frequency")
+            .x_label_formatter(&|&log2_x| format!("{:.0}", (2.0f32).powf(log2_x)))
+            .x_labels(NUM_X_LABELS)
+            .y_desc("Phase in units of pi")
+            .y_labels(NUM_Y_LABELS)
+            .draw()?;
+        let plotting_area = chart.plotting_area();
+        assert_eq!(
+            plotting_area.dim_in_pixel(),
+            (relative_freq_buckets, phase_buckets)
+        );
+        let (base_x, base_y) = plotting_area.get_base_pixel();
 
-    // Draw the error map
-    trace!("Error(relfreq, phase) table is:");
-    trace!("relrate,phase,error");
-    let mut max_error = 0;
-    for bucket in error_map.iter() {
-        // Check out the current error map bucket
-        // FIXME: For this to become a real test, we should also inspect the error
-        let error = bucket.data();
-        max_error = max_error.max(error);
-        let (relative_rate, phase) = bucket.center();
-        trace!("{},{},{}", relative_rate, phase, error);
+        // Map the error landscape
+        let error_map = make_error_map();
 
-        // Plot the current bucket on the error map
-        let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
-        let (x_idx, y_idx) = bucket.index();
-        root.draw_pixel(
-            (x_idx as i32 + base_x, y_idx as i32 + base_y),
-            &RGBColor(scaled_error, 0, 0),
-        )?;
+        // Draw the error map
+        for bucket in error_map.iter() {
+            let error = bucket.data();
+            let scaled_error = ((error as f32 / AudioSample::MANTISSA_DIGITS as f32) * 255.0) as u8;
+            let (x_idx, y_idx) = bucket.index();
+            root.draw_pixel(
+                (x_idx as i32 + base_x, y_idx as i32 + base_y),
+                &RGBColor(scaled_error, 0, 0),
+            )?;
+        }
+        std::mem::drop(chart);
+        std::mem::drop(root);
+
+        // Make sure that the error map matches expectations
+        check_error_map(error_map);
+    } else {
+        // If not plotting, only measure and check the error map
+        check_error_map(make_error_map());
     }
-    info!("Maximum error is {} bits", max_error);
+
+    // We're done
     Ok(())
 }
 
@@ -111,7 +134,8 @@ fn reference_vs_unlimited_saw() {
     plot_initial_error(
         BandLimitedSignal::<ReferenceSaw>::new(),
         UnlimitedSignal::new(jigsaw::unlimited_saw),
-        "initial_reference_vs_unlimited_saw.png",
+        Some("initial_reference_vs_unlimited_saw.png"),
+        |_bucket| true, // FIXME: I don't know a good error bound here
     )
     .unwrap()
 }
@@ -124,7 +148,8 @@ fn f32sin_vs_reference_saw() {
     plot_initial_error(
         BandLimitedSignal::<jigsaw::F32SinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "initial_f32sin_vs_reference_saw.png",
+        Some("initial_f32sin_vs_reference_saw.png"),
+        |bucket| bucket.data() <= 10,
     )
     .unwrap()
 }
@@ -137,7 +162,8 @@ fn itersin_vs_reference_saw() {
     plot_initial_error(
         BandLimitedSignal::<jigsaw::IterativeSinSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "initial_itersin_vs_reference_saw.png",
+        None,
+        |bucket| bucket.data() == 0,
     )
     .unwrap()
 }
@@ -150,7 +176,8 @@ fn invmul_vs_reference_saw() {
     plot_initial_error(
         BandLimitedSignal::<jigsaw::InvMulSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "initial_invmul_vs_reference_saw.png",
+        None,
+        |bucket| bucket.data() == 0,
     )
     .unwrap()
 }
@@ -164,7 +191,8 @@ fn smartharms_vs_reference_saw() {
     plot_initial_error(
         BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "initial_smartharms_vs_reference_saw.png",
+        None,
+        |bucket| bucket.data() == 0,
     )
     .unwrap()
 }
@@ -178,7 +206,8 @@ fn fullit_vs_reference_saw() {
     plot_initial_error(
         BandLimitedSignal::<jigsaw::FullyIterativeSaw>::new(),
         BandLimitedSignal::<ReferenceSaw>::new(),
-        "initial_fullit_vs_reference_saw.png",
+        None,
+        |bucket| bucket.data() == 0,
     )
     .unwrap()
 }

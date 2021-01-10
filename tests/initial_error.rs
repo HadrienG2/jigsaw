@@ -25,14 +25,19 @@ fn plot_initial_error(
             |sampling_rate, oscillator_freq, phase| {
                 let signal = signal.measure(sampling_rate, oscillator_freq, phase);
                 let reference = reference.measure(sampling_rate, oscillator_freq, phase);
-                let error_bits = shared::error::bits_of_error(signal, reference);
-                (error_bits as u32 * 255 / AudioSample::MANTISSA_DIGITS) as u8
+                shared::error::bits_of_error(signal, reference)
             },
             AtomicU8::fetch_max,
         )
     };
     let error_map = if let Some(plot_filename) = plot_filename {
-        map_and_plot(make_error_map, plot_filename, |error| RGBColor(error, 0, 0))?
+        map_and_plot(make_error_map, plot_filename, |error_bits| {
+            RGBColor(
+                (error_bits as u32 * 255 / AudioSample::MANTISSA_DIGITS) as u8,
+                0,
+                0,
+            )
+        })?
     } else {
         make_error_map()
     };

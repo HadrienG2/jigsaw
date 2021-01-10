@@ -6,12 +6,11 @@ mod shared;
 use crate::shared::{
     logger::init_logger,
     parameters::{
-        irregular_samples, NUM_PHASE_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE,
-        SAMPLING_RATE_RANGE,
+        irregular_samples, NUM_PHASE_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATES,
     },
     signal::{BandLimitedSignal, Signal, UnlimitedSignal},
 };
-use rand::Rng;
+use rand::prelude::*;
 
 #[test]
 #[ignore]
@@ -19,7 +18,7 @@ use rand::Rng;
 fn compare_random_saws() {
     init_logger();
     let mut rng = rand::thread_rng();
-    let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);
+    let sampling_rate = *SAMPLING_RATES.choose(&mut rng).unwrap();
     let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
     let unlimited = UnlimitedSignal::new(jigsaw::unlimited_saw);
     let reference = BandLimitedSignal::<jigsaw::ReferenceSaw>::new();

@@ -6,7 +6,7 @@ use jigsaw::{AudioFrequency, AudioPhase, AudioPhaseMod, SamplingRateHz};
 use rand::Rng;
 
 // Region of interest within the oscillator configuration space
-pub const SAMPLING_RATE_RANGE: Range<SamplingRateHz> = 44_100..192_000;
+pub const SAMPLING_RATES: &'static [SamplingRateHz] = &[44_100, 48_000, 96_000, 192_000];
 pub const OSCILLATOR_FREQ_RANGE: Range<AudioFrequency> = 20.0..20000.0;
 pub const PHASE_RANGE: Range<AudioPhase> = 0.0..AudioPhaseMod::consts::TAU;
 
@@ -23,8 +23,10 @@ pub const PHASE_RANGE: Range<AudioPhase> = 0.0..AudioPhaseMod::consts::TAU;
 /// with optimal precision for IEEE-754 binary floats.
 ///
 pub fn log2_relative_rate_range() -> Range<AudioFrequency> {
-    let start = ((SAMPLING_RATE_RANGE.start as AudioFrequency) / OSCILLATOR_FREQ_RANGE.end).log2();
-    let end = ((SAMPLING_RATE_RANGE.end as AudioFrequency) / OSCILLATOR_FREQ_RANGE.start).log2();
+    let start =
+        ((*SAMPLING_RATES.first().unwrap() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.end).log2();
+    let end =
+        ((*SAMPLING_RATES.last().unwrap() as AudioFrequency) / OSCILLATOR_FREQ_RANGE.start).log2();
     start..end
 }
 

@@ -6,11 +6,11 @@ mod shared;
 
 use crate::shared::{
     error::bits_of_error,
-    parameters::{OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATE_RANGE},
+    parameters::{OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATES},
 };
 use jigsaw::{AudioSample, Oscillator};
 use log::{debug, info, trace};
-use rand::Rng;
+use rand::prelude::*;
 
 /// Number of iterations before a signal with cumulative error is considered
 /// stable with respect to its reference
@@ -65,7 +65,7 @@ fn search_cumulative_error_breakdown() {
     shared::logger::init_logger();
     let mut rng = rand::thread_rng();
     for _ in 0..100 {
-        let sampling_rate = rng.gen_range(SAMPLING_RATE_RANGE);
+        let sampling_rate = *SAMPLING_RATES.choose(&mut rng).unwrap();
         let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
         let initial_phase = rng.gen_range(PHASE_RANGE);
         let reference = jigsaw::ReferenceSaw::new(sampling_rate, oscillator_freq, initial_phase);

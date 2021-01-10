@@ -2,7 +2,7 @@
 
 use super::parameters::{
     bucket_start, irregular_samples, log2_relative_rate_range, NUM_PHASE_BUCKETS,
-    NUM_RELATIVE_FREQ_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATE_RANGE,
+    NUM_RELATIVE_FREQ_BUCKETS, OSCILLATOR_FREQ_RANGE, PHASE_RANGE, SAMPLING_RATES,
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 use jigsaw::{AudioFrequency, AudioPhase, AudioPhaseMod, SamplingRateHz};
@@ -49,16 +49,21 @@ impl OscillatorMap {
                     // Pick a combination of sampling rate and oscillator sampling rate
                     // that matches the desired ratio.
                     let relative_rate = (2.0 as AudioFrequency).powf(log2_relative_rate);
-                    let min_sample_rate =
-                        SAMPLING_RATE_RANGE
-                            .start
-                            .max((relative_rate * OSCILLATOR_FREQ_RANGE.start).ceil()
-                                as SamplingRateHz);
-                    let max_sample_rate = SAMPLING_RATE_RANGE
-                        .end
-                        .min((relative_rate * OSCILLATOR_FREQ_RANGE.end).floor() as SamplingRateHz)
-                        .max(min_sample_rate);
-                    let sampling_rate = rng.gen_range(min_sample_rate..=max_sample_rate);
+                    let min_sample_rate_idx = SAMPLING_RATES
+                        .iter()
+                        .position(|&rate| {
+                            rate as AudioFrequency >= relative_rate * OSCILLATOR_FREQ_RANGE.start
+                        })
+                        .unwrap();
+                    let max_sample_rate_idx = SAMPLING_RATES
+                        .iter()
+                        .rposition(|&rate| {
+                            rate as AudioFrequency <= relative_rate * OSCILLATOR_FREQ_RANGE.end
+                        })
+                        .unwrap();
+                    let sampling_rate_idx =
+                        rng.gen_range(min_sample_rate_idx..=max_sample_rate_idx);
+                    let sampling_rate = SAMPLING_RATES[sampling_rate_idx];
                     let oscillator_freq = (sampling_rate as AudioFrequency) / relative_rate;
                     debug!(
                         "Sampling a {} Hz signal at {} Hz (relative rate = {})",

@@ -96,7 +96,7 @@ pub(crate) fn sincos_harmonics_iterative(
 ///
 /// This approach requires a storage buffer for num_harmonics (sin, cos) pairs,
 /// but it is more precise than the previous one (each harmonic is a sum of only
-/// O(log2(num_harmonics)) terms, not O(num_harmonics) terms) and vectorizes
+/// O(log2(prev_harmonics)) terms, not O(prev_harmonics) terms) and vectorizes
 /// very well so as long as the buffer fits in the L1 cache it will be faster.
 ///
 pub(crate) fn sincos_harmonics_smart(
@@ -163,6 +163,7 @@ mod tests {
         test_tools::panics,
     };
     use audio_tests::is_standard_rate;
+    use core::fmt::Debug;
     use quickcheck::{quickcheck, TestResult};
 
     mod band_limited_harmonics {
@@ -223,5 +224,87 @@ mod tests {
         }
     }
 
-    // TODO: Test harmonics computations
+    mod sin_harmonics_precise {
+        use super::*;
+
+        fn test_sin_harmonics_precise<F: Float + Debug>(
+            phase: f64,
+            num_harmonics: HarmonicsCounter,
+        ) -> TestResult {
+            // Disregard IEEE-754 abominations in this test
+            if !phase.is_normal() {
+                return TestResult::discard();
+            }
+
+            // Check that sin_harmonics_precise produces the expected number of
+            // harmonics, and that these harmonics do indeed match a harmonic
+            // sine series computed in the requested precision.
+            let mut observed_harmonics = 0;
+            for (harmonic_idx, sin_harmonic) in
+                super::sin_harmonics_precise::<F>(phase, num_harmonics).enumerate()
+            {
+                let harmonic = harmonic_idx + 1;
+                assert_eq!(
+                    sin_harmonic,
+                    cast::<F, f64>(cast::<f64, F>(phase * harmonic as f64).unwrap().sin()).unwrap()
+                );
+                observed_harmonics = harmonic;
+            }
+            assert_eq!(observed_harmonics, num_harmonics as usize);
+            TestResult::passed()
+        }
+
+        quickcheck! {
+            fn sin_harmonics_precise_f32(phase: f64, num_harmonics: HarmonicsCounter) -> TestResult {
+                test_sin_harmonics_precise::<f32>(phase, num_harmonics)
+            }
+
+            fn sin_harmonics_precise_f64(phase: f64, num_harmonics: HarmonicsCounter) -> TestResult {
+                test_sin_harmonics_precise::<f64>(phase, num_harmonics)
+            }
+        }
+    }
+
+    quickcheck! {
+        fn sincos_harmonics_iterative(
+            phase: f64,
+            num_harmonics: HarmonicsCounter
+        ) -> TestResult {
+            // Disregard IEEE-754 abominations in this test
+            if !phase.is_normal() {
+                return TestResult::discard();
+            }
+
+            // Check that sincos_harmonics_iterative produces the expected
+            // number of harmonics, and that these harmonics, though not very
+            // precise, roughly match libm-computed sincos harmonics.
+            let mut observed_harmonics = 0;
+            let fundamental = phase.sin_cos();
+            for (harmonic_idx, sincos_harmonic) in
+                super::sincos_harmonics_iterative(fundamental, num_harmonics).enumerate()
+            {
+                let harmonic = harmonic_idx + 1;
+                let (computed_sin, computed_cos) = sincos_harmonic;
+                let (expected_sin, expected_cos) = (phase * harmonic as f64).sin_cos();
+                // NOTE: This worst-case loss of precision per operation is
+                //       rather huge, it means that we lose a bit more than 6
+                //       binary digits of precision every time we move to a new
+                //       harmonic, i.e. at the 10th harmonic (fundamental + 9
+                //       iterations) the output already is complete garbage!
+                //
+                //       I guess I should investigate a compensated version of
+                //       this iterative algorithm, since although it's known not
+                //       to be reliable, it is the building block for the more
+                //       clever ones, who simply try to iterate less often.
+                //
+                assert_le!((computed_sin - expected_sin).abs(), 65.0 * harmonic_idx as f64 * f64::EPSILON);
+                assert_le!((computed_cos - expected_cos).abs(), 65.0 * harmonic_idx as f64 * f64::EPSILON);
+                observed_harmonics = harmonic;
+            }
+            assert_eq!(observed_harmonics, num_harmonics as usize);
+            TestResult::passed()
+        }
+    }
+
+    // TODO: Test other harmonics computations
 }

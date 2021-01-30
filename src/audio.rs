@@ -83,7 +83,7 @@ pub(crate) fn validate_audio_frequency(
     // Shannon-Nyquist criterion.
     assert_lt!(
         freq,
-        (sampling_rate as AudioFrequency) / 2.0,
+        nyquist_frequency(sampling_rate),
         "Audio frequency should honor the Shannon-Nyquist criterion"
     );
     is_ideal

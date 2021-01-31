@@ -308,7 +308,7 @@ fn synthesize_odd_signal(fourier_coefficients: &[f64], sinus_harmonics: &[f64]) 
 }
 
 /// Variant of the InvMulSaw algorithm that uses an FFT-style harmonics
-/// generation algorithm for extra precision and speed.
+/// generation algorithm for extra speed.
 pub struct SmartHarmonicsSaw {
     // Underlying oscillator phase iterator
     phase: OscillatorPhase,

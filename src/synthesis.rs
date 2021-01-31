@@ -142,9 +142,8 @@ pub(crate) fn sincos_harmonics_iterative(
 /// harmonics using a recursive approach inspired by the FFT algorithm.
 ///
 /// This approach requires a storage buffer for num_harmonics (sin, cos) pairs,
-/// but it is more precise than the previous one (each harmonic is a sum of only
-/// O(log2(prev_harmonics)) terms, not O(prev_harmonics) terms) and vectorizes
-/// very well so as long as the buffer fits in the L1 cache it will be faster.
+/// but it vectorizes very well so as long as the buffer fits in the L1 cache it
+/// will be faster.
 ///
 pub(crate) fn sincos_harmonics_smart(
     (sin_1, cos_1): (f64, f64),
@@ -505,19 +504,11 @@ mod tests {
             phase: f64,
             num_harmonics: HarmonicsCounter
         ) -> TestResult {
-            // Disregard silly 0-harmonics requests in this test
-            if num_harmonics == 0 {
-                return TestResult::discard();
-            }
-
-            // Run the test
             test_sincos_harmonics(
                 phase,
                 num_harmonics,
                 super::sincos_harmonics_smart,
-                // FIXME: It's not quite log2() error, it's a sum of log2()
-                //        terms where each term has logarithmically growing error.
-                |_phase, harmonic, _expected| 0.5 * f64::EPSILON * ((harmonic as f64).log2().ceil() + 1.0),
+                |_phase, harmonic, _expected| 0.5 * f64::EPSILON * harmonic as f64,
             )
         }
     }

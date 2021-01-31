@@ -165,8 +165,6 @@ impl Iterator for F64SinSaw {
 /// This variation is about 30% faster, but it loses 10 bits of precision,
 /// which means that the result would be distinguishable from that of the
 /// ReferenceSaw in a 16-bit CD recording. That seems unacceptable.
-//
-// FIXME: Check if we still lose 10 bits with the fixed algorithm
 ///
 pub struct F32SinSaw {
     // Underlying oscillator phase iterator

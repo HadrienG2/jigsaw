@@ -74,10 +74,11 @@ pub(crate) fn sin_harmonics_1ulp(
 /// Given a fundamental sinus' phase, compute the value of all of its sinus
 /// harmonics up to a certain rank with (configurable) standard precision.
 ///
-/// The result's error does not grow with the input phase, but grows linearly as
-/// the harmonic rank increases. Which is not a problem for this library, as the
-/// output sines and cosines will be divided by their harmonic rank in the final
-/// Fourier series summation, which will get us back to constant error.
+/// The result's error should not depend significantly on the input phase, but
+/// grows linearly as the harmonic rank increases. Which is not a problem for
+/// this library, as the output sines and cosines will be divided by their
+/// harmonic rank in the final Fourier series summation, which will get us back
+/// to constant relative error in the end.
 ///
 /// You can pick the precision in which the harmonics will be computed, but f64
 /// will be slow, and f32 won't be much faster and will be too imprecise.
@@ -91,22 +92,23 @@ pub(crate) fn sin_harmonics_precise<F: Float>(
     (1..=num_harmonics).map(move |harmonic| {
         // Perform phase range wrapping to bound the multiplicative rounding
         // error that will be caused by harmonic elevation.
-        // Result is within ]-TAU; TAU[, so assuming the input phase was
-        // perfectly accurate, the new rounding error is <= f64::EPSILON * TAU.
+        // Result is within ]-TAU; TAU[, so the extra rounding error in the
+        // output is <= 0.5 * f64::EPSILON * TAU.
         use core::f64::consts::TAU;
         let wrapped_phase = phase % TAU;
 
         // Perform harmonic elevation before casting to final float type.
-        // Output rounding error is <= f64::EPSILON * harmonic * wrapped_phase
-        // which per the above is <= f64::EPSILON * harmonic * TAU.
+        // Extra error is <= 0.5 * f64::EPSILON * harmonic * wrapped_phase
+        // which per the above is <= 0.5 * f64::EPSILON * harmonic * TAU.
         let harmonic_phase = harmonic as f64 * wrapped_phase;
 
-        // Cast to the sinus computation precision. Result error will be bounded
-        // by max(F::epsilon() * harmonic_phase, f64::EPSILON * harmonic * TAU)
+        // Cast to the sinus computation precision. Extra error is bounded
+        // by whichever is greater of the previous error or
+        // 0.5 * F::epsilon() * harmonic_phase.
         let harmonic_phase = cast::<f64, F>(harmonic_phase).unwrap();
 
-        // ...therefore, the error of the final sinus is either one F ulp or
-        // or f64::EPSILON * harmonic * TAU, whichever is greater
+        // ...therefore, the error of the final sinus is either 0.5 F ulp or
+        // of the order of f64::EPSILON * harmonic * TAU, whichever is greater
         cast(harmonic_phase.sin()).unwrap()
     })
 }
@@ -115,12 +117,12 @@ pub(crate) fn sin_harmonics_precise<F: Float>(
 /// harmonics using an iterative approach based on the
 /// sincos((n+1)x) = f(sincos(nx)) trigonometric identities.
 ///
-/// This approach doesn't use more memory than the naive approach, but is not
-/// super precise and will break down relatively quickly as num_harmonics goes
-/// up. It is only viable because we have to compute at twice the precision of
-/// the desired result for accumulation error reasons.
+/// Output error is around 0.5 eps per computed harmonic, accumulating across
+/// successive harmonics. Which is fine, because since we normalize by the
+/// harmonic rank in the end, we get an error bound of 0.5 eps on all terms.
 ///
-/// Also, it doesn't vectorize as well as the following approach.
+/// Also, this approach doesn't use much more storage than the "precise"
+/// approach. But it doesn't vectorize as well as the following approach.
 ///
 pub(crate) fn sincos_harmonics_iterative(
     (sin_1, cos_1): (f64, f64),
@@ -132,22 +134,6 @@ pub(crate) fn sincos_harmonics_iterative(
         sin_n = sin;
         cos_n = cos;
         Some((sin, cos))
-    })
-    .take(num_harmonics as usize)
-}
-
-/// Like sincos_harmonics_iterative, but uses higher-precision arithmetic
-/// internally in order to achieve better output precision.
-pub(crate) fn sincos_harmonics_iterative_f128(
-    (sin_1, cos_1): (f128, f128),
-    num_harmonics: HarmonicsCounter,
-) -> impl Iterator<Item = (f64, f64)> {
-    let (mut sin_n, mut cos_n) = (f128::from(0.0), f128::from(1.0));
-    std::iter::from_fn(move || {
-        let (sin, cos) = (sin_n * cos_1 + cos_n * sin_1, cos_n * cos_1 - sin_n * sin_1);
-        sin_n = sin;
-        cos_n = cos;
-        Some((sin.into(), cos.into()))
     })
     .take(num_harmonics as usize)
 }
@@ -362,8 +348,8 @@ mod tests {
             use core::f64::consts::TAU;
             let wrapped_harmonic_phase_f64 = harmonic_f64 * (phase % TAU);
             let (wrapped_sin, wrapped_cos) = wrapped_harmonic_phase_f64.sin_cos();
-            assert_le!((wrapped_sin - expected_sin).abs(), 18.0 * f64::EPSILON * harmonic_f64);
-            assert_le!((wrapped_cos - expected_cos).abs(), 18.0 * f64::EPSILON * harmonic_f64);
+            assert_le!((wrapped_sin - expected_sin).abs(), 19.0 * f64::EPSILON * harmonic_f64);
+            assert_le!((wrapped_cos - expected_cos).abs(), 19.0 * f64::EPSILON * harmonic_f64);
             TestResult::passed()
         }
     }
@@ -440,9 +426,39 @@ mod tests {
                 |_phase, harmonic, _expected_sin| 19.0 * f64::EPSILON * harmonic as f64
             )
         }
+
+        /// Test the "iterative" sincos algorithm
+        fn sincos_harmonics_iterative(
+            phase: f64,
+            num_harmonics: HarmonicsCounter
+        ) -> TestResult {
+            // Disregard IEEE-754 abominations in this test
+            if !phase.is_normal() {
+                return TestResult::discard();
+            }
+
+            // Check the result against expectation
+            let mut observed_harmonics = 0;
+            let fundamental = phase.sin_cos();
+            for (sin_harmonic, cos_harmonic) in
+                super::sincos_harmonics_iterative(fundamental, num_harmonics)
+            {
+                observed_harmonics += 1;
+                let (expected_sin, expected_cos) =
+                    expected_sincos_harmonic_f128(phase, observed_harmonics);
+                assert_le!(
+                    (sin_harmonic - expected_sin).abs(),
+                    0.5 * f64::EPSILON * observed_harmonics as f64
+                );
+                assert_le!(
+                    (cos_harmonic - expected_cos).abs(),
+                    0.5 * f64::EPSILON * observed_harmonics as f64
+                );
+            }
+            assert_eq!(observed_harmonics, num_harmonics);
+            TestResult::passed()
+        }
     }
 
-    // ---
-
-    // TODO: Write a sincos test harness as above, then use it to test sincos generators
+    // TODO: Test the "smart" sincos generator
 }

@@ -118,6 +118,8 @@ impl Iterator for ReferenceSaw {
     }
 }
 
+// TODO: Make ReferenceSaw use the 1-ulp generator, add and validate an f64 saw
+
 /// Variation of ReferenceSaw that uses a single-precision sinus
 ///
 /// This variation is about 30% faster, but it loses 10 bits of precision,

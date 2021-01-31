@@ -150,7 +150,14 @@ pub(crate) fn sincos_harmonics_smart(
     (sin_1, cos_1): (f64, f64),
     (sin_buf, cos_buf): (&mut [f64], &mut [f64]),
 ) {
+    // Infer number of harmonics from input buffers
     let num_harmonics = sin_buf.len();
+    assert_eq!(cos_buf.len(), num_harmonics);
+    if num_harmonics == 0 {
+        return;
+    }
+
+    // Do the computation
     let sin_buf = &mut sin_buf[..num_harmonics];
     let cos_buf = &mut cos_buf[..num_harmonics];
     sin_buf[0] = sin_1;
@@ -426,39 +433,92 @@ mod tests {
                 |_phase, harmonic, _expected_sin| 19.0 * f64::EPSILON * harmonic as f64
             )
         }
+    }
 
-        /// Test the "iterative" sincos algorithm
+    // ---
+
+    /// Test harness for sincos harmonics generators
+    fn test_sincos_harmonics(
+        phase: f64,
+        num_harmonics: HarmonicsCounter,
+        generator: impl FnOnce((f64, f64), (&mut [f64], &mut [f64])),
+        expected_precision: impl Fn(f64, HarmonicsCounter, f64) -> f64,
+    ) -> TestResult {
+        // Disregard IEEE-754 abominations in this test
+        if !phase.is_normal() {
+            return TestResult::discard();
+        }
+
+        // Generate the harmonics
+        let fundamental = phase.sin_cos();
+        let mut sin_buf = vec![0.0; num_harmonics as usize].into_boxed_slice();
+        let mut cos_buf = sin_buf.clone();
+        generator(fundamental, (&mut sin_buf[..], &mut cos_buf[..]));
+
+        // Check the results against expectation
+        for (harmonic_idx, (&sin_harmonic, &cos_harmonic)) in
+            sin_buf.iter().zip(cos_buf.iter()).enumerate()
+        {
+            let harmonic = harmonic_idx as HarmonicsCounter + 1;
+            let (expected_sin, expected_cos) = expected_sincos_harmonic_f128(phase, harmonic);
+            assert_le!(
+                (sin_harmonic - expected_sin).abs(),
+                expected_precision(phase, harmonic, expected_sin.abs())
+            );
+            assert_le!(
+                (cos_harmonic - expected_cos).abs(),
+                expected_precision(phase, harmonic, expected_cos.abs())
+            );
+        }
+        TestResult::passed()
+    }
+
+    quickcheck! {
+        /// Test the "iterative" sincos harmonics generator
         fn sincos_harmonics_iterative(
             phase: f64,
             num_harmonics: HarmonicsCounter
         ) -> TestResult {
-            // Disregard IEEE-754 abominations in this test
-            if !phase.is_normal() {
+            test_sincos_harmonics(
+                phase,
+                num_harmonics,
+                |fundamental, (sin_buf, cos_buf)| {
+                    assert_eq!(sin_buf.len(), cos_buf.len());
+                    let num_harmonics = sin_buf.len() as HarmonicsCounter;
+                    let iter =  super::sincos_harmonics_iterative(fundamental, num_harmonics);
+                    let mut last_idx = 0;
+                    for (idx, ((sin_src, cos_src), (sin_dst, cos_dst))) in
+                        iter.zip(sin_buf.iter_mut().zip(cos_buf.iter_mut())).enumerate()
+                    {
+                        last_idx = idx;
+                        *sin_dst = sin_src;
+                        *cos_dst = cos_src;
+                    }
+                    assert_eq!(last_idx, (num_harmonics as usize).saturating_sub(1));
+                },
+                |_phase, harmonic, _expected| 0.5 * f64::EPSILON * harmonic as f64,
+            )
+        }
+
+        /// Test the "smart" sincos harmonics generator
+        fn sincos_harmonics_smart(
+            phase: f64,
+            num_harmonics: HarmonicsCounter
+        ) -> TestResult {
+            // Disregard silly 0-harmonics requests in this test
+            if num_harmonics == 0 {
                 return TestResult::discard();
             }
 
-            // Check the result against expectation
-            let mut observed_harmonics = 0;
-            let fundamental = phase.sin_cos();
-            for (sin_harmonic, cos_harmonic) in
-                super::sincos_harmonics_iterative(fundamental, num_harmonics)
-            {
-                observed_harmonics += 1;
-                let (expected_sin, expected_cos) =
-                    expected_sincos_harmonic_f128(phase, observed_harmonics);
-                assert_le!(
-                    (sin_harmonic - expected_sin).abs(),
-                    0.5 * f64::EPSILON * observed_harmonics as f64
-                );
-                assert_le!(
-                    (cos_harmonic - expected_cos).abs(),
-                    0.5 * f64::EPSILON * observed_harmonics as f64
-                );
-            }
-            assert_eq!(observed_harmonics, num_harmonics);
-            TestResult::passed()
+            // Run the test
+            test_sincos_harmonics(
+                phase,
+                num_harmonics,
+                super::sincos_harmonics_smart,
+                // FIXME: It's not quite log2() error, it's a sum of log2()
+                //        terms where each term has logarithmically growing error.
+                |_phase, harmonic, _expected| 0.5 * f64::EPSILON * ((harmonic as f64).log2().ceil() + 1.0),
+            )
         }
     }
-
-    // TODO: Test the "smart" sincos generator
 }

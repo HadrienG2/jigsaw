@@ -8,7 +8,7 @@ use crate::shared::{
     signal::{BandLimitedSignal, Signal, UnlimitedSignal},
 };
 use core::sync::atomic::AtomicU8;
-use jigsaw::{AudioSample, ReferenceSaw};
+use jigsaw::{AudioSample, F64SinSaw};
 use log::{info, trace};
 use plotters::prelude::*;
 
@@ -63,11 +63,30 @@ fn plot_initial_error(
 
 #[test]
 #[ignore]
-/// Compare the reference saw to a band-unlimited saw
-fn reference_vs_unlimited_saw() {
+/// Compare the double-precision saw to the reference saw
+///
+/// The two should compare equal, and since they do, we'll use the F64SinSaw as
+/// our reference in subsequent tests as it is 50x faster, which means that
+/// tests based on it will run a huge lot faster.
+///
+fn f64sin_vs_reference_saw() {
     shared::logger::init_logger();
     plot_initial_error(
-        BandLimitedSignal::<ReferenceSaw>::new(),
+        BandLimitedSignal::<F64SinSaw>::new(),
+        BandLimitedSignal::<jigsaw::ReferenceSaw>::new(),
+        None,
+        |bucket| bucket.data() == 0,
+    )
+    .unwrap()
+}
+
+#[test]
+#[ignore]
+/// Compare the double-precision saw to a band-unlimited saw
+fn f64sin_vs_unlimited_saw() {
+    shared::logger::init_logger();
+    plot_initial_error(
+        BandLimitedSignal::<F64SinSaw>::new(),
         UnlimitedSignal::new(jigsaw::unlimited_saw),
         Some("initial_reference_vs_unlimited_saw.png"),
         |_bucket| true, // FIXME: I don't know a good error bound here
@@ -77,13 +96,13 @@ fn reference_vs_unlimited_saw() {
 
 #[test]
 #[ignore]
-/// Compare the saw with single-precision sinus to the reference saw
-fn f32sin_vs_reference_saw() {
+/// Compare the saw with single-precision sinus to the double-precision saw
+fn f32sin_vs_f64sin_saw() {
     shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::F32SinSaw>::new(),
-        BandLimitedSignal::<ReferenceSaw>::new(),
-        Some("initial_f32sin_vs_reference_saw.png"),
+        BandLimitedSignal::<F64SinSaw>::new(),
+        Some("initial_f32sin_vs_f64sin_saw.png"),
         |bucket| bucket.data() <= 10,
     )
     .unwrap()
@@ -91,12 +110,12 @@ fn f32sin_vs_reference_saw() {
 
 #[test]
 #[ignore]
-/// Compare the saw with iterative sinus to the reference saw
-fn itersin_vs_reference_saw() {
+/// Compare the saw with iterative sinus to the double-precision saw
+fn itersin_vs_f64sin_saw() {
     shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::IterativeSinSaw>::new(),
-        BandLimitedSignal::<ReferenceSaw>::new(),
+        BandLimitedSignal::<F64SinSaw>::new(),
         None,
         |bucket| bucket.data() == 0,
     )
@@ -105,12 +124,12 @@ fn itersin_vs_reference_saw() {
 
 #[test]
 #[ignore]
-/// Compare the saw with multiply-by-inverse to the reference saw
-fn invmul_vs_reference_saw() {
+/// Compare the saw with multiply-by-inverse to the double-precision saw
+fn invmul_vs_f64sin_saw() {
     shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::InvMulSaw>::new(),
-        BandLimitedSignal::<ReferenceSaw>::new(),
+        BandLimitedSignal::<F64SinSaw>::new(),
         None,
         |bucket| bucket.data() == 0,
     )
@@ -120,12 +139,12 @@ fn invmul_vs_reference_saw() {
 #[test]
 #[ignore]
 /// Compare the saw using a smart FFT-like harmonics computation method
-/// to the reference saw
-fn smartharms_vs_reference_saw() {
+/// to the double-precision saw
+fn smartharms_vs_f64sin_saw() {
     shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new(),
-        BandLimitedSignal::<ReferenceSaw>::new(),
+        BandLimitedSignal::<F64SinSaw>::new(),
         None,
         |bucket| bucket.data() == 0,
     )
@@ -135,12 +154,12 @@ fn smartharms_vs_reference_saw() {
 #[test]
 #[ignore]
 /// Compare the saw using a fully iterative harmonics computation method to the
-/// reference saw
-fn fullit_vs_reference_saw() {
+/// double-precision saw
+fn fullit_vs_f64sin_saw() {
     shared::logger::init_logger();
     plot_initial_error(
         BandLimitedSignal::<jigsaw::FullyIterativeSaw>::new(),
-        BandLimitedSignal::<ReferenceSaw>::new(),
+        BandLimitedSignal::<F64SinSaw>::new(),
         None,
         |bucket| bucket.data() == 0,
     )

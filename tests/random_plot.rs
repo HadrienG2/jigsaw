@@ -22,21 +22,23 @@ fn compare_random_saws() {
     let oscillator_freq = rng.gen_range(OSCILLATOR_FREQ_RANGE);
     let unlimited = UnlimitedSignal::new(jigsaw::unlimited_saw);
     let reference = BandLimitedSignal::<jigsaw::ReferenceSaw>::new();
+    let f64sin = BandLimitedSignal::<jigsaw::F32SinSaw>::new();
     let f32sin = BandLimitedSignal::<jigsaw::F32SinSaw>::new();
     let itersin = BandLimitedSignal::<jigsaw::IterativeSinSaw>::new();
     let invmul = BandLimitedSignal::<jigsaw::InvMulSaw>::new();
     let smartharms = BandLimitedSignal::<jigsaw::SmartHarmonicsSaw>::new();
     let fullit = BandLimitedSignal::<jigsaw::FullyIterativeSaw>::new();
-    println!("phase,unlimited,reference,f32sin,itersin,invmul,smartharms,fullit");
+    println!("phase,unlimited,reference,f64sin,f32sin,itersin,invmul,smartharms,fullit");
     for (_phase_bucket_idx, phases) in irregular_samples(PHASE_RANGE, NUM_PHASE_BUCKETS) {
         // FIXME: Do the plot ourselves instead of printing CSV
         // FIXME: Turn this into a real test?
         for phase in phases.iter().copied() {
             println!(
-                "{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{}",
                 phase,
                 unlimited.measure(sampling_rate, oscillator_freq, phase),
                 reference.measure(sampling_rate, oscillator_freq, phase),
+                f64sin.measure(sampling_rate, oscillator_freq, phase),
                 f32sin.measure(sampling_rate, oscillator_freq, phase),
                 itersin.measure(sampling_rate, oscillator_freq, phase),
                 invmul.measure(sampling_rate, oscillator_freq, phase),

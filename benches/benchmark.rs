@@ -31,6 +31,10 @@ pub fn saw_benchmark(criterion: &mut Criterion) {
                 oscillator_benchmark::<jigsaw::ReferenceSaw>(sampling_rate, saw_freq),
             );
             group.bench_function(
+                "f64 sinus",
+                oscillator_benchmark::<jigsaw::F64SinSaw>(sampling_rate, saw_freq),
+            );
+            group.bench_function(
                 "f32 sinus",
                 oscillator_benchmark::<jigsaw::F32SinSaw>(sampling_rate, saw_freq),
             );

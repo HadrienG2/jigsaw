@@ -112,19 +112,61 @@ impl Iterator for ReferenceSaw {
     fn next(&mut self) -> Option<Self::Item> {
         self.phase.next().map(|phase| {
             precise_saw(phase, |phase| {
+                synthesis::sin_harmonics_1ulp(phase, self.num_harmonics)
+            })
+        })
+    }
+}
+
+/// Variation of ReferenceSaw that uses a double-precision sinus
+///
+/// This uses the same algorithm as ReferenceSaw, but with standard
+/// double-precision computations. For all intended usage configurations of this
+/// crate (oscillator freq in audio range, sampling rate available in modern
+/// sound cards), it should produce the same result, but about 50x faster.
+///
+pub struct F64SinSaw {
+    // Underlying oscillator phase iterator
+    phase: OscillatorPhase,
+
+    // Number of harmonics to be generated
+    num_harmonics: HarmonicsCounter,
+}
+//
+impl Oscillator for F64SinSaw {
+    /// Set up a sawtooth oscillator.
+    fn new(
+        sampling_rate: SamplingRateHz,
+        oscillator_freq: AudioFrequency,
+        initial_phase: AudioPhase,
+    ) -> Self {
+        let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
+        Self {
+            phase,
+            num_harmonics,
+        }
+    }
+}
+//
+impl Iterator for F64SinSaw {
+    type Item = AudioSample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.phase.next().map(|phase| {
+            precise_saw(phase, |phase| {
                 synthesis::sin_harmonics_precise::<f64>(phase, self.num_harmonics)
             })
         })
     }
 }
 
-// TODO: Make ReferenceSaw use the 1-ulp generator, add and validate an f64 saw
-
-/// Variation of ReferenceSaw that uses a single-precision sinus
+/// Variation of F64SinSaw that uses a single-precision sinus
 ///
 /// This variation is about 30% faster, but it loses 10 bits of precision,
 /// which means that the result would be distinguishable from that of the
 /// ReferenceSaw in a 16-bit CD recording. That seems unacceptable.
+//
+// FIXME: Check if we still lose 10 bits with the fixed algorithm
 ///
 pub struct F32SinSaw {
     // Underlying oscillator phase iterator

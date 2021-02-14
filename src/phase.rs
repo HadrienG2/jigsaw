@@ -33,7 +33,7 @@ pub fn min_oscillator_freq(sampling_rate: SamplingRateHz) -> AudioFrequency {
 // sin(n*phi) / n are at worst precise up to dsin = n*dphi / n = dphi ~ 10^-7,
 // which is fine for the same reason that storing the audio signal at 32-bit is
 // fine : it gives us the best resolution that a 24-bit high end sound card is
-// capable of rendrering.
+// capable of rendering.
 //
 pub type AudioPhase = f32;
 pub use std::f32 as AudioPhaseMod;

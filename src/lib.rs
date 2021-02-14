@@ -12,6 +12,9 @@ pub use crate::{
     synthesis::Oscillator,
 };
 
+use f128::f128;
+use num_traits::Float;
+
 #[cfg(not(test))]
 pub use crate::phase::OscillatorPhase;
 #[cfg(test)]
@@ -407,10 +410,10 @@ impl Iterator for SmartHarmonicsSaw {
 ///
 pub struct FullyIterativeSaw {
     // Buffers to store the sines and cosines of harmonics
-    sincos_phase_harmonics: SincosHarmonics,
+    sincos_phase_harmonics: (Box<[f128]>, Box<[f128]>),
 
     // (sin, cos) of the underlying phase increment and its harmonics
-    sincos_dphi_harmonics: SincosHarmonics,
+    sincos_dphi_harmonics: (Box<[f128]>, Box<[f128]>),
 
     // Fourier coefficients
     fourier_coefficients: FourierCoefficients,
@@ -430,26 +433,23 @@ impl Oscillator for FullyIterativeSaw {
         let fourier_coefficients = saw_fourier_coefficients(num_harmonics).collect();
 
         // Set up storage for harmonics
-        let mut sincos_phase_harmonics = sincos_harmonics_buffer(num_harmonics);
+        let harmonics_buf = vec![f128::from(0.0); num_harmonics as usize].into_boxed_slice();
+        let mut sincos_phase_harmonics = (harmonics_buf.clone(), harmonics_buf);
         let mut sincos_dphi_harmonics = sincos_phase_harmonics.clone();
         let phase_increment = phase.phase_increment() as f64;
 
         // Compute the harmonics of the fundamental and the phase increment
         let fundamental_phase = initial_phase as f64 - core::f64::consts::PI;
-        synthesis::sincos_harmonics_smart(
-            fundamental_phase.sin_cos(),
-            (
-                &mut sincos_phase_harmonics.0[..],
-                &mut sincos_phase_harmonics.1[..],
-            ),
-        );
-        synthesis::sincos_harmonics_smart(
-            phase_increment.sin_cos(),
-            (
-                &mut sincos_dphi_harmonics.0[..],
-                &mut sincos_dphi_harmonics.1[..],
-            ),
-        );
+        for harmonic in 1..=num_harmonics {
+            let harmonic_phase_f128 = f128::from(harmonic) * f128::from(fundamental_phase);
+            let (sin, cos) = harmonic_phase_f128.sin_cos();
+            sincos_phase_harmonics.0[harmonic as usize - 1] = sin;
+            sincos_phase_harmonics.1[harmonic as usize - 1] = cos;
+            let harmonic_phase_f128 = f128::from(harmonic) * f128::from(phase_increment);
+            let (sin, cos) = harmonic_phase_f128.sin_cos();
+            sincos_dphi_harmonics.0[harmonic as usize - 1] = sin;
+            sincos_dphi_harmonics.1[harmonic as usize - 1] = cos;
+        }
 
         // Emit the output oscillator
         Self {
@@ -473,7 +473,11 @@ impl Iterator for FullyIterativeSaw {
         let cos_dphi_harmonics = &mut self.sincos_dphi_harmonics.1[..num_harmonics];
 
         // Accumulate the saw signal in a SIMD-friendly way
-        let result = synthesize_odd_signal(fourier_coefficients, sin_phase_harmonics);
+        let sin_phase_harmonics_f64 = sin_phase_harmonics
+            .iter()
+            .map(|sin| (*sin).into())
+            .collect::<Box<[_]>>();
+        let result = synthesize_odd_signal(fourier_coefficients, &sin_phase_harmonics_f64[..]);
 
         // Move all harmonics forward by a phase increment
         //

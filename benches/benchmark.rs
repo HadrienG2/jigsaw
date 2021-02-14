@@ -50,10 +50,6 @@ pub fn saw_benchmark(criterion: &mut Criterion) {
                 "Smart harmonics",
                 oscillator_benchmark::<jigsaw::SmartHarmonicsSaw>(sampling_rate, saw_freq),
             );
-            group.bench_function(
-                "Fully iterative",
-                oscillator_benchmark::<jigsaw::FullyIterativeSaw>(sampling_rate, saw_freq),
-            );
         }
     }
 }

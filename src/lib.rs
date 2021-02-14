@@ -12,9 +12,6 @@ pub use crate::{
     synthesis::Oscillator,
 };
 
-use f128::f128;
-use num_traits::Float;
-
 #[cfg(not(test))]
 pub use crate::phase::OscillatorPhase;
 #[cfg(test)]
@@ -397,118 +394,6 @@ impl Iterator for SmartHarmonicsSaw {
 
         // Accumulate the saw signal in a way which the compiler can vectorize
         Some(synthesize_odd_signal(fourier_coefficients, sin_buf))
-    }
-}
-
-/// Variant of the SmartHarmonicsSaw algorithm that avoids phase computations
-/// by leveraging the fact that the phase increment is constant.
-///
-/// This introduces a cumulative error that will, after a number of iterations,
-/// become non negligible. As part of this algorithm's validation procedure,
-/// I'll measure after how many iterations this happens, and introduce an
-/// automatic reset procedure that prevents it from happening.
-///
-pub struct FullyIterativeSaw {
-    // Buffers to store the sines and cosines of harmonics
-    sincos_phase_harmonics: (Box<[f128]>, Box<[f128]>),
-
-    // (sin, cos) of the underlying phase increment and its harmonics
-    sincos_dphi_harmonics: (Box<[f128]>, Box<[f128]>),
-
-    // Fourier coefficients
-    fourier_coefficients: FourierCoefficients,
-}
-//
-impl Oscillator for FullyIterativeSaw {
-    /// Set up a sawtooth oscillator.
-    fn new(
-        sampling_rate: SamplingRateHz,
-        oscillator_freq: AudioFrequency,
-        initial_phase: AudioPhase,
-    ) -> Self {
-        // Do the basic setup that is common to all saw generator algorithms
-        let (phase, num_harmonics) = setup_saw(sampling_rate, oscillator_freq, initial_phase);
-
-        // Compute the Fourier coefficients
-        let fourier_coefficients = saw_fourier_coefficients(num_harmonics).collect();
-
-        // Set up storage for harmonics
-        let harmonics_buf = vec![f128::from(0.0); num_harmonics as usize].into_boxed_slice();
-        let mut sincos_phase_harmonics = (harmonics_buf.clone(), harmonics_buf);
-        let mut sincos_dphi_harmonics = sincos_phase_harmonics.clone();
-        let phase_increment = phase.phase_increment() as f64;
-
-        // Compute the harmonics of the fundamental and the phase increment
-        let fundamental_phase = initial_phase as f64 - core::f64::consts::PI;
-        for harmonic in 1..=num_harmonics {
-            let harmonic_phase_f128 = f128::from(harmonic) * f128::from(fundamental_phase);
-            let (sin, cos) = harmonic_phase_f128.sin_cos();
-            sincos_phase_harmonics.0[harmonic as usize - 1] = sin;
-            sincos_phase_harmonics.1[harmonic as usize - 1] = cos;
-            let harmonic_phase_f128 = f128::from(harmonic) * f128::from(phase_increment);
-            let (sin, cos) = harmonic_phase_f128.sin_cos();
-            sincos_dphi_harmonics.0[harmonic as usize - 1] = sin;
-            sincos_dphi_harmonics.1[harmonic as usize - 1] = cos;
-        }
-
-        // Emit the output oscillator
-        Self {
-            sincos_phase_harmonics,
-            sincos_dphi_harmonics,
-            fourier_coefficients,
-        }
-    }
-}
-//
-impl Iterator for FullyIterativeSaw {
-    type Item = AudioSample;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // Teach the compiler that all our internal buffers have the same size
-        let num_harmonics = self.fourier_coefficients.len();
-        let fourier_coefficients = &self.fourier_coefficients[..num_harmonics];
-        let sin_phase_harmonics = &mut self.sincos_phase_harmonics.0[..num_harmonics];
-        let cos_phase_harmonics = &mut self.sincos_phase_harmonics.1[..num_harmonics];
-        let sin_dphi_harmonics = &mut self.sincos_dphi_harmonics.0[..num_harmonics];
-        let cos_dphi_harmonics = &mut self.sincos_dphi_harmonics.1[..num_harmonics];
-
-        // Accumulate the saw signal in a SIMD-friendly way
-        let sin_phase_harmonics_f64 = sin_phase_harmonics
-            .iter()
-            .map(|sin| (*sin).into())
-            .collect::<Box<[_]>>();
-        let result = synthesize_odd_signal(fourier_coefficients, &sin_phase_harmonics_f64[..]);
-
-        // Move all harmonics forward by a phase increment
-        //
-        // TODO: Add a method for generating multiple oscillator samples that
-        //       uses an FFT-like approach instead of iteratively moving the
-        //       fundamental sine formward. This should be more precise, at the
-        //       cost of using more memory / bandwidth.
-        //
-        //       This could be done by reworking the Oscillator interface so
-        //       that it is parametrized by a number of samples, and emits
-        //       arrays of samples instead of individual samples.
-        //
-        //       The number of samples could probably be restricted to be a
-        //       power of 2, if need be. But I think we can do without.
-        //
-        //       Also, I'll end up with 2D arrays, for which ndarray might be
-        //       an appropriate tool.
-        //
-        for harmonic in 0..num_harmonics {
-            let new_sincos_phase = [
-                sin_phase_harmonics[harmonic] * cos_dphi_harmonics[harmonic]
-                    + cos_phase_harmonics[harmonic] * sin_dphi_harmonics[harmonic],
-                cos_phase_harmonics[harmonic] * cos_dphi_harmonics[harmonic]
-                    - sin_phase_harmonics[harmonic] * sin_dphi_harmonics[harmonic],
-            ];
-            sin_phase_harmonics[harmonic] = new_sincos_phase[0];
-            cos_phase_harmonics[harmonic] = new_sincos_phase[1];
-        }
-
-        // Emit the generated signal
-        Some(result)
     }
 }
 

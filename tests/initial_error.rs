@@ -150,18 +150,3 @@ fn smartharms_vs_f64sin_saw() {
     )
     .unwrap()
 }
-
-#[test]
-#[ignore]
-/// Compare the saw using a fully iterative harmonics computation method to the
-/// double-precision saw
-fn fullit_vs_f64sin_saw() {
-    shared::logger::init_logger();
-    plot_initial_error(
-        BandLimitedSignal::<jigsaw::FullyIterativeSaw>::new(),
-        BandLimitedSignal::<F64SinSaw>::new(),
-        None,
-        |bucket| bucket.data() == 0,
-    )
-    .unwrap()
-}

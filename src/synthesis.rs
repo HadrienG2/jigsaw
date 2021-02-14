@@ -71,20 +71,6 @@ pub(crate) fn sin_harmonics_1ulp(
     })
 }
 
-/// Like sin_harmonics_1ulp, but generates (sin, cos) pairs
-pub(crate) fn sincos_harmonics_1ulp(
-    phase: f64,
-    num_harmonics: HarmonicsCounter,
-) -> impl Iterator<Item = (f64, f64)> {
-    (1..=num_harmonics).map(move |harmonic| {
-        // Lossless from an f64 point of view (f128 has twice the mantissa bits)
-        let harmonic_phase_f128 = f128::from(harmonic) * f128::from(phase);
-        // Within one f128 ulp of true result, which is << one f64 ulp
-        let (sin, cos) = harmonic_phase_f128.sin_cos();
-        (sin.into(), cos.into())
-    })
-}
-
 /// Given a fundamental sinus' phase, compute the value of all of its sinus
 /// harmonics up to a certain rank with (configurable) standard precision.
 ///
